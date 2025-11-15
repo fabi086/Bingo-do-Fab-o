@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import type { User } from '../types';
 import { gameStateService } from '../services/gameState';
@@ -26,7 +27,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
     }
   };
 
-  const handleRegister = async (e: React.FormEvent) => {
+  const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (!name.trim() || !password.trim() || !pixKey.trim()) {
@@ -36,7 +37,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
     
     const newUser: User = { name, password, pixKey };
     
-    if (await gameStateService.registerUser(newUser)) {
+    if (gameStateService.registerUser(newUser)) {
         onLoginSuccess(newUser);
     } else {
         setError('Este nome de usuário já existe.');

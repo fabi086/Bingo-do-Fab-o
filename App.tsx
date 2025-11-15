@@ -1,5 +1,7 @@
+
+
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import type { Prize, BingoCardData, GeneratedCard, User, GameMode } from './types';
+import type { Prize, GeneratedCard, User, GameMode } from './types';
 import { generateBingoCard } from './services/geminiService';
 import { gameStateService } from './services/gameState';
 import BingoBall from './components/BingoBall';
@@ -17,9 +19,29 @@ const prizes: Prize[] = [
 ];
 
 const prices = { single: 20, double: 30 };
-const DRAW_INTERVAL_MS = 4000;
+const DRAW_INTERVAL_MS = 1500; // Reduced for better pacing
 
-const callerPhrases = ["E o número sorteado é...", "Atenção, saiu o número...", "Próxima bolinha, número...", "Cantando a pedra de número...", "Marcando na cartela o número...", "E agora, temos o...", "Para a sua sorte, número...", "Confira na sua cartela o número..."];
+// More enthusiastic narrator phrases
+const callerPhrases = [
+    "E a bolinha da vez é...", 
+    "Saindo quentinha do globo...", 
+    "Atenção para a pedra...", 
+    "E o número que saiu é...", 
+    "Para agitar a galera, número...", 
+    "Vem que tem, número...", 
+    "Olha elaaa, a bolinha de número...", 
+    "Pode marcar na cartela...",
+    "E agora, o número da sorte é...",
+    "Que rufem os tambores para o número...",
+    "Prepara a caneta, que saiu o número...",
+    "Direto do globo para a sua cartela!",
+    "Vamos ver, vamos ver... o número é...",
+    "Segura o coração, que saiu o...",
+    "Mais uma pedrinha da sorte!",
+    "Marcando e ganhando, com o número...",
+    "Atenção total para o número...",
+    "É agora! O número é...",
+];
 
 const useLocalStorage = <T,>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] => {
   const [storedValue, setStoredValue] = useState<T>(() => {
@@ -58,11 +80,36 @@ const Confetti: React.FC = () => (
     </div>
 );
 
+// Authoritative bingo check function - independent of local user settings
+const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: GameMode) => {
+    for (const card of cards) {
+      const { B, I, N, G, O } = card.cardData;
+      const allNumbersOnCard = [...B, ...I, ...N, ...G, ...O].filter(n => typeof n === 'number') as number[];
+      
+      const checkLine = (line: (number | string)[]) => line.every(num => num === 'LIVRE' || numbers.has(num as number));
+      
+      if (mode === 'full') {
+        if (allNumbersOnCard.every(num => numbers.has(num))) return { cardId: card.id, playerName: card.owner };
+      } else {
+        const columns = [B, I, N, G, O];
+        for(const col of columns) if(checkLine(col)) return { cardId: card.id, playerName: card.owner };
+        for (let i = 0; i < 5; i++) {
+            const row = columns.map(col => col[i]);
+            if (checkLine(row)) return { cardId: card.id, playerName: card.owner };
+        }
+        const diag1 = [B[0], I[1], N[2], G[3], O[4]];
+        const diag2 = [B[4], I[3], N[2], G[1], O[0]];
+        if (checkLine(diag1) || checkLine(diag2)) return { cardId: card.id, playerName: card.owner };
+      }
+    }
+    return null;
+};
+
 
 const App: React.FC = () => {
   // --- Shared State from Service ---
   const [gameState, setGameState] = useState(gameStateService.getState());
-  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, playerWins, gameMode, scheduledGames, preGameCountdown, gameStartingId } = gameState;
+  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId } = gameState;
 
   // --- Local State (per-device/user) ---
   const [currentUser, setCurrentUser] = useLocalStorage<User | null>('bingoCurrentUser', null);
@@ -80,75 +127,285 @@ const App: React.FC = () => {
   const [cardViewMode, setCardViewMode] = useLocalStorage<'carousel' | 'grid'>('cardViewMode', 'carousel');
   const [isAdminInPlayerView, setIsAdminInPlayerView] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSpeechBlocked, setIsSpeechBlocked] = useState(false);
+  const [speechQueue, setSpeechQueue] = useState<number[]>([]);
 
   const applauseRef = useRef<HTMLAudioElement>(null);
   const cheeringRef = useRef<HTMLAudioElement>(null);
   const drawTimeoutRef = useRef<number | null>(null);
-
+  const prevDrawnNumbersRef = useRef<number[]>([]);
+  const prevBingoWinnerRef = useRef(bingoWinner);
+  const lastUtteranceRef = useRef<string | null>(null);
+  const isNarratingRef = useRef(false);
+  const prevIsGameActiveRef = useRef(isGameActive);
+  
   // --- Memos and Derived State ---
-  const nextGame = useMemo(() => {
-    const now = new Date().getTime();
-    const upcomingGames = scheduledGames
-      .filter(game => new Date(game.startTime).getTime() > now)
-      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
-    return upcomingGames[0] || null;
-  }, [scheduledGames]);
-
+  const { playerWins } = gameState; // Destructure here to satisfy dependency arrays
   const myCards = useMemo(() => generatedCards.filter(c => c.owner === currentUser?.name), [generatedCards, currentUser]);
-  
-  const allPlayers = useMemo(() => {
-    return onlineUsers.map(u => u === 'admin' ? 'Fábio' : u).sort();
-  }, [onlineUsers]);
+  const nextGame = useMemo(() => scheduledGames.filter(g => new Date(g.startTime).getTime() > Date.now()).sort((a,b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())[0] || null, [scheduledGames]);
+  const allPlayers = useMemo(() => onlineUsers.map(u => u === 'admin' ? 'Fábio' : u).sort(), [onlineUsers]);
+  const totalPrice = useMemo(() => (Math.floor(cardQuantity / 2) * prices.double) + (cardQuantity % 2 * prices.single), [cardQuantity]);
 
-  const totalPrice = useMemo(() => {
-    const pairs = Math.floor(cardQuantity / 2); const singles = cardQuantity % 2;
-    return pairs * prices.double + singles * prices.single;
-  }, [cardQuantity]);
-  
   // --- Effects ---
+
+  // Update prevIsGameActiveRef after each render to detect transitions
+  useEffect(() => {
+    prevIsGameActiveRef.current = isGameActive;
+  });
 
   // Initialize and Subscribe to game state service
   useEffect(() => {
-    gameStateService.initialize().then(() => {
-        setIsLoading(false);
-    });
-
+    gameStateService.initialize();
+    setIsLoading(false);
     const unsubscribe = gameStateService.subscribe(setGameState);
     return unsubscribe;
   }, []);
 
   // Handle user login/logout for online status
   useEffect(() => {
-    if (currentUser) {
-      gameStateService.login(currentUser.name);
-    }
-    const handleBeforeUnload = () => {
-      if (currentUser) gameStateService.logout(currentUser.name);
-    };
+    if (currentUser) gameStateService.login(currentUser.name);
+    const handleBeforeUnload = () => { if (currentUser) gameStateService.logout(currentUser.name); };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [currentUser]);
+
+  // Speak function for one-off announcements (e.g., countdowns, winners)
+  const speak = useCallback((text: string): Promise<void> => {
+    return new Promise((resolve) => {
+        if (!('speechSynthesis' in window) || isMuted) {
+            return resolve();
+        }
+
+        if (isSpeechBlocked) {
+            lastUtteranceRef.current = text;
+            return resolve();
+        }
+        
+        // If a number is currently being narrated, pause the queue.
+        if (isNarratingRef.current) {
+            window.speechSynthesis.cancel(); // Interrupts the number
+        }
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'pt-BR';
+        utterance.rate = 1.3;
+        utterance.pitch = 1.4;
+        utterance.volume = volume;
+        
+        utterance.onend = () => {
+            lastUtteranceRef.current = null;
+            resolve();
+        };
+
+        utterance.onerror = (e) => {
+            if (e.error === 'not-allowed') {
+                console.warn('Speech synthesis was not allowed. Needs user interaction.');
+                setIsSpeechBlocked(true);
+                lastUtteranceRef.current = text;
+            } else if (e.error !== 'interrupted' && e.error !== 'canceled') {
+                 console.error('Speech error:', e.error);
+            }
+            resolve();
+        };
+        
+        window.speechSynthesis.speak(utterance);
+    });
+  }, [isMuted, volume, isSpeechBlocked]);
+
+  // --- Reactive Narration: Populates a speech queue to handle numbers correctly ---
+  useEffect(() => {
+    const newNumbers = drawnNumbers.filter(num => !prevDrawnNumbersRef.current.includes(num));
+    if (newNumbers.length > 0 && isGameActive && !bingoWinner) {
+        setSpeechQueue(prevQueue => [...prevQueue, ...newNumbers]);
+    }
+    prevDrawnNumbersRef.current = drawnNumbers;
+  }, [drawnNumbers, isGameActive, bingoWinner]);
   
+  // --- Number Narration Queue Processor ---
+  useEffect(() => {
+    if (speechQueue.length === 0 || isNarratingRef.current || isSpeechBlocked || isMuted || window.speechSynthesis.speaking) {
+        return;
+    }
+
+    isNarratingRef.current = true;
+
+    const numberToSpeak = speechQueue[0];
+    const phrase = callerPhrases[Math.floor(Math.random() * callerPhrases.length)];
+    const letter = getLetterForNumber(numberToSpeak);
+    const textToSpeak = `${phrase} Letra ${letter}... ${numberToSpeak}!`;
+
+    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+    utterance.lang = 'pt-BR';
+    utterance.rate = 1.4;
+    utterance.pitch = 1.6;
+    utterance.volume = volume;
+
+    utterance.onend = () => {
+        isNarratingRef.current = false;
+        setSpeechQueue(prevQueue => prevQueue.slice(1));
+
+        // If I am the admin, trigger the next draw after a delay.
+        // This creates a synchronized loop: draw -> narrate -> draw -> narrate...
+        if (currentUser?.name === 'admin') {
+            const currentState = gameStateService.getState();
+            if (currentState.isGameActive && !currentState.bingoWinner) {
+                 if (drawTimeoutRef.current) clearTimeout(drawTimeoutRef.current);
+                 drawTimeoutRef.current = window.setTimeout(() => {
+                    gameStateService.drawNextNumber();
+                }, DRAW_INTERVAL_MS);
+            }
+        }
+    };
+
+    utterance.onerror = (e) => {
+        if (e.error === 'interrupted' || e.error === 'canceled') {
+            console.log('Narration interrupted, will retry.');
+        } else {
+            console.error('Speech error during narration:', e.error);
+            setSpeechQueue(prevQueue => prevQueue.slice(1));
+        }
+        isNarratingRef.current = false;
+    };
+
+    window.speechSynthesis.speak(utterance);
+
+  }, [speechQueue, isSpeechBlocked, isMuted, volume, currentUser]);
+
+  // --- Reactive Winner Check: Admin checks for winner when numbers change ---
+  useEffect(() => {
+    if (currentUser?.name !== 'admin' || !isGameActive || bingoWinner || drawnNumbers.length < 5) return;
+    
+    const winner = checkForWinner(generatedCards, new Set(drawnNumbers), gameMode);
+    if (winner) {
+      gameStateService.setWinner(winner);
+    }
+  }, [drawnNumbers, isGameActive, bingoWinner, currentUser, gameMode, generatedCards]);
+  
+  // --- Reactive Winner Celebration: Trigger effects when a winner is declared ---
+  useEffect(() => {
+      if (bingoWinner && !prevBingoWinnerRef.current) {
+          if (drawTimeoutRef.current) clearTimeout(drawTimeoutRef.current); // Stop drawing new numbers
+          setShowConfetti(true);
+          setSpeechQueue([]); // Clear any pending numbers to be called
+          applauseRef.current?.play().catch(e => console.error("Audio error:", e));
+          cheeringRef.current?.play().catch(e => console.error("Audio error:", e));
+          const winnerName = bingoWinner.playerName === 'admin' ? 'Fábio' : bingoWinner.playerName;
+          
+          const speakWinner = async () => {
+            await new Promise(resolve => setTimeout(resolve, 250)); 
+            speak(`BINGOOOOO! TEMOS UM VENCEDOR! Parabéns para ${winnerName}! Que sorte!`);
+          }
+          speakWinner();
+
+
+          if (myCards.some(c => c.id === bingoWinner.cardId) && !isAutoMarking) {
+            setMissedBingo(true);
+          }
+      }
+      prevBingoWinnerRef.current = bingoWinner;
+  }, [bingoWinner, speak, myCards, isAutoMarking, setMissedBingo]);
+  
+  // Countdown timer for next scheduled game
+  useEffect(() => {
+    if (isGameActive || !nextGame || bingoWinner || gameStartingId) return; 
+    const timer = setInterval(async () => {
+      const distance = new Date(nextGame.startTime).getTime() - Date.now();
+      if (distance <= 1000) {
+        setCountdown("O jogo vai começar!");
+        if (currentUser?.name === 'admin') {
+            gameStateService.setGameStartingId(nextGame.id);
+            await speak(`Atenção, o bingo vai começar em 10 segundos. Boa sorte!`);
+            gameStateService.setPreGameCountdown(10);
+        }
+        clearInterval(timer);
+        return;
+      }
+      const d = Math.floor(distance / 864e5), h = Math.floor((distance % 864e5) / 36e5), m = Math.floor((distance % 36e5) / 6e4), s = Math.floor((distance % 6e4) / 1000);
+      setCountdown([d > 0 && `${d}d`, h > 0 && `${h}h`, `${m}m`, `${s}s`].filter(Boolean).join(' '));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isGameActive, bingoWinner, nextGame, gameStartingId, currentUser, speak]);
+
+  // 10-second pre-game countdown (driven by admin client)
+  useEffect(() => {
+    if (preGameCountdown === null || isGameActive || currentUser?.name !== 'admin') return;
+
+    if (preGameCountdown === 0) {
+      if (gameStartingId) {
+        speak("Começou!");
+        gameStateService.startGame(gameStartingId);
+      }
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const newCountdown = preGameCountdown - 1;
+      gameStateService.setPreGameCountdown(newCountdown);
+      if (newCountdown > 0) speak(String(newCountdown));
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
+
+  // Kicks off the drawing process when the game starts. The rest is handled by the narration callback loop.
+  useEffect(() => {
+    // If the game just started (was false, is now true) AND I'm the admin...
+    if (isGameActive && !prevIsGameActiveRef.current && currentUser?.name === 'admin') {
+        // Use a small delay for suspense before the first number.
+        const startTimeout = setTimeout(() => {
+            if (gameStateService.getState().isGameActive) {
+                gameStateService.drawNextNumber();
+            }
+        }, 2000);
+        return () => clearTimeout(startTimeout);
+    }
+  }, [isGameActive, currentUser]);
+
+  // --- Other handlers ---
+  
+  const handleUnlockSpeech = () => {
+    if (!('speechSynthesis' in window)) return;
+    
+    // Message to confirm audio is working. Use the last missed one for better UX.
+    const messageToSpeak = lastUtteranceRef.current || "Som ativado!";
+
+    const unlockUtterance = new SpeechSynthesisUtterance(messageToSpeak);
+    unlockUtterance.volume = isMuted ? 0 : volume;
+    unlockUtterance.lang = 'pt-BR';
+    unlockUtterance.rate = 1.2;
+    unlockUtterance.pitch = 1.3;
+    
+    unlockUtterance.onend = () => {
+        // Crucially, unblock the state only after a successful speech event
+        setIsSpeechBlocked(false);
+        lastUtteranceRef.current = null;
+    };
+
+    unlockUtterance.onerror = (e) => {
+        console.error("Failed to unlock speech synthesis on user click:", e.error);
+        // If it still fails, keep the banner up.
+    };
+    
+    // This call is inside a user-initiated event handler, which is what browsers require.
+    window.speechSynthesis.speak(unlockUtterance);
+};
+
+
   const handleLogout = () => {
     if (currentUser) gameStateService.logout(currentUser.name);
     setCurrentUser(null);
     setIsAdminInPlayerView(false);
-  };
-
-  const handleBuyCards = async () => {
-    if (!currentUser) return;
-    await handleGenerateCards(cardQuantity);
-    setCardQuantity(1);
   };
   
   const handleGenerateCards = useCallback(async (quantity: number) => {
     if (quantity <= 0 || !currentUser) return;
     setIsGenerating(true); setError(null);
     try {
-      const existingCardSignatures = new Set(generatedCards.map(c => JSON.stringify([...c.cardData.B, ...c.cardData.I, ...c.cardData.N, ...c.cardData.G, ...c.cardData.O].filter(n => typeof n === 'number').sort())));
+      const existingCards = gameStateService.getState().generatedCards;
+      const existingCardSignatures = new Set(existingCards.map(c => JSON.stringify([...c.cardData.B, ...c.cardData.I, ...c.cardData.N, ...c.cardData.G, ...c.cardData.O].filter(n => typeof n === 'number').sort())));
       const newCards: GeneratedCard[] = [];
       for (let i = 0; i < quantity; i++) {
-        let newCardData: BingoCardData, signature: string, attempts = 0;
+        let newCardData, signature, attempts = 0;
         do {
           newCardData = await generateBingoCard();
           signature = JSON.stringify([...newCardData.B, ...newCardData.I, ...newCardData.N, ...newCardData.G, ...newCardData.O].filter(n => typeof n === 'number').sort());
@@ -157,41 +414,29 @@ const App: React.FC = () => {
         existingCardSignatures.add(signature);
         newCards.push({ id: `card-${Date.now()}-${i}`, cardData: newCardData, owner: currentUser.name });
       }
-      await gameStateService.addCards(newCards);
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : 'Falha ao gerar cartela.');
-    } finally { setIsGenerating(false); }
-  }, [currentUser, generatedCards]);
+      gameStateService.addCards(newCards);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Falha ao gerar cartela.'); } 
+    finally { setIsGenerating(false); }
+  }, [currentUser]);
 
-  const speak = useCallback((text: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
-        if (!('speechSynthesis' in window) || isMuted) {
-            resolve();
-            return;
-        }
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'pt-BR';
-        utterance.rate = 0.9;
-        utterance.pitch = 1.1;
-        utterance.volume = volume;
-        utterance.onend = () => resolve();
-        utterance.onerror = (e) => {
-            if (e.error !== 'interrupted') {
-                console.error('Speech synthesis error:', e.error);
-                reject(e);
-            } else {
-                resolve(); 
-            }
-        };
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
-    });
-  }, [isMuted, volume]);
-  
+  const handleBuyCards = async () => {
+    if (!currentUser) return;
+    await handleGenerateCards(cardQuantity);
+    setCardQuantity(1);
+  };
+
+  const handleResetGame = () => {
+    gameStateService.resetGame();
+    setShowConfetti(false); setManualMarks({}); setMissedBingo(false);
+    setSpeechQueue([]);
+    window.speechSynthesis.cancel();
+    if (applauseRef.current) { applauseRef.current.currentTime = 0; applauseRef.current.pause(); }
+    if (cheeringRef.current) { cheeringRef.current.currentTime = 0; cheeringRef.current.pause(); }
+  }
+
   const handleToggleAutoMarking = () => {
     const newIsAutoMarking = !isAutoMarking;
-    if (isAutoMarking && !newIsAutoMarking) {
+    if (newIsAutoMarking === false) { // Switched TO manual
         const newManualMarks: Record<string, (number | string)[]> = {};
         const drawnNumbersSet = new Set(drawnNumbers);
         myCards.forEach(card => {
@@ -215,151 +460,6 @@ const App: React.FC = () => {
     });
   };
 
-  const checkForBingo = useCallback((cards: GeneratedCard[], numbers: Set<number>, mode: GameMode, allManualMarks: Record<string, (number|string)[]>) => {
-    for (const card of cards) {
-      const { B, I, N, G, O } = card.cardData;
-      const allNumbersOnCard = [...B, ...I, ...N, ...G, ...O].filter(n => typeof n === 'number') as number[];
-      
-      const marksForCard = isAutoMarking ? numbers : new Set(allManualMarks[card.id] || []);
-
-      const checkLine = (line: (number | string)[]) => line.every(num => num === 'LIVRE' || marksForCard.has(num as number));
-      
-      if (mode === 'full') {
-        if (allNumbersOnCard.every(num => marksForCard.has(num))) return { cardId: card.id, playerName: card.owner };
-      } else {
-        const columns = [B, I, N, G, O];
-        for(const col of columns) if(checkLine(col)) return { cardId: card.id, playerName: card.owner };
-        for (let i = 0; i < 5; i++) {
-            const row = columns.map(col => col[i]);
-            if (checkLine(row)) return { cardId: card.id, playerName: card.owner };
-        }
-        const diag1 = [B[0], I[1], N[2], G[3], O[4]];
-        const diag2 = [B[4], I[3], N[2], G[1], O[0]];
-        if (checkLine(diag1) || checkLine(diag2)) return { cardId: card.id, playerName: card.owner };
-      }
-    }
-    return null;
-  }, [isAutoMarking]);
-    
-  const handleDrawNumber = useCallback(async () => {
-    const currentState = gameStateService.getState();
-    if (currentState.drawnNumbers.length >= 75 || !currentState.isGameActive || currentState.bingoWinner) return;
-
-    let newNumber;
-    const drawnSet = new Set(currentState.drawnNumbers);
-    do { newNumber = Math.floor(Math.random() * 75) + 1; } while (drawnSet.has(newNumber));
-    
-    const phrase = callerPhrases[Math.floor(Math.random() * callerPhrases.length)];
-    const letter = getLetterForNumber(newNumber);
-    
-    await speak(`${phrase} Letra ${letter}... ${newNumber}`);
-    
-    const latestState = gameStateService.getState();
-    if (!latestState.isGameActive || latestState.bingoWinner) return;
-
-    await gameStateService.addDrawnNumber(newNumber);
-    
-    const updatedDrawnNumbers = [...latestState.drawnNumbers, newNumber];
-    const winner = checkForBingo(latestState.generatedCards, new Set(updatedDrawnNumbers), latestState.gameMode, manualMarks);
-    if(winner) {
-      if (!isAutoMarking) setMissedBingo(true); 
-      await gameStateService.setWinner(winner);
-
-      setShowConfetti(true);
-      applauseRef.current?.play().catch(e => console.error("Erro ao tocar áudio:", e));
-      cheeringRef.current?.play().catch(e => console.error("Erro ao tocar áudio:", e));
-      const winnerName = winner.playerName === 'admin' ? 'Fábio' : winner.playerName;
-      setTimeout(() => speak(`BINGO! BINGO! BINGO! E o grande vencedor é... ${winnerName}! Parabéns!`), 500);
-    }
-  }, [speak, checkForBingo, manualMarks, isAutoMarking, setMissedBingo]);
-
-  const startPreGameCountdown = useCallback(async () => {
-    const currentState = gameStateService.getState();
-    if (currentState.isGameActive || currentState.preGameCountdown !== null) return;
-    const countdownStart = 10;
-    await gameStateService.setPreGameCountdown(countdownStart);
-    speak(`Atenção, o bingo vai começar em ${countdownStart} segundos. Boa sorte!`);
-  }, [speak]);
-
-  const handleResetGame = async () => {
-    await gameStateService.resetGame();
-    setShowConfetti(false); setManualMarks({}); setMissedBingo(false);
-    window.speechSynthesis.cancel();
-    if(applauseRef.current) { applauseRef.current.currentTime = 0; applauseRef.current.pause(); }
-    if(cheeringRef.current) { cheeringRef.current.currentTime = 0; cheeringRef.current.pause(); }
-  }
-
-  // Countdown timer for next scheduled game
-  useEffect(() => {
-    if (isGameActive || !nextGame || bingoWinner || gameStartingId) return; 
-    
-    const timer = setInterval(async () => {
-      const distance = new Date(nextGame.startTime).getTime() - new Date().getTime();
-      if (distance <= 1000) {
-        setCountdown("O jogo vai começar!");
-        if (currentUser?.name === 'admin' && !bingoWinner) {
-            await gameStateService.setGameStartingId(nextGame.id);
-            await startPreGameCountdown();
-        }
-        clearInterval(timer);
-        return;
-      }
-      const d = Math.floor(distance / 864e5);
-      const h = Math.floor((distance % 864e5) / 36e5);
-      const m = Math.floor((distance % 36e5) / 6e4);
-      const s = Math.floor((distance % 6e4) / 1000);
-      setCountdown([d > 0 && `${d}d`, h > 0 && `${h}h`, `${m}m`, `${s}s`].filter(Boolean).join(' '));
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isGameActive, bingoWinner, nextGame, startPreGameCountdown, gameStartingId, currentUser]);
-
-  // 10-second pre-game countdown
-  useEffect(() => {
-    if (preGameCountdown === null || isGameActive) return;
-
-    if (preGameCountdown === 0) {
-      if (currentUser?.name === 'admin' && gameStartingId) {
-        speak("Começou!");
-        gameStateService.startGame(gameStartingId);
-      }
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      const newCountdown = preGameCountdown - 1;
-      if (currentUser?.name === 'admin') {
-         await gameStateService.setPreGameCountdown(newCountdown);
-         if (newCountdown > 0) speak(String(newCountdown));
-      }
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
-
-  // Main game draw loop (only runs for admin to be the "caller")
-  useEffect(() => {
-    if (!isGameActive || bingoWinner || currentUser?.name !== 'admin') {
-      if (drawTimeoutRef.current) clearTimeout(drawTimeoutRef.current);
-      return;
-    }
-
-    const runDrawLoop = async () => {
-      await handleDrawNumber();
-      const currentState = gameStateService.getState();
-      if (currentState.isGameActive && !currentState.bingoWinner) {
-        drawTimeoutRef.current = window.setTimeout(runDrawLoop, DRAW_INTERVAL_MS);
-      }
-    };
-
-    drawTimeoutRef.current = window.setTimeout(runDrawLoop, 1000);
-
-    return () => {
-      if (drawTimeoutRef.current) clearTimeout(drawTimeoutRef.current);
-      window.speechSynthesis.cancel();
-    };
-  }, [isGameActive, bingoWinner, currentUser, handleDrawNumber]);
-
   useEffect(() => {
     if (bingoWinner) {
       const winnerIndex = myCards.findIndex(card => card.id === bingoWinner.cardId);
@@ -367,25 +467,26 @@ const App: React.FC = () => {
     }
   }, [bingoWinner, myCards]);
 
-  if (isLoading) {
-    return <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center text-2xl font-bold">Carregando o Bingo do Fabão...</div>;
-  }
-  
+  if (isLoading) return <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center text-2xl font-bold">Carregando o Bingo do Fabão...</div>;
   if (!currentUser) return <Auth onLoginSuccess={setCurrentUser} allUsers={users} />;
-  
-  if (currentUser.name === 'admin' && !isAdminInPlayerView) {
-      return <AdminPanel 
-          onSwitchToPlayerView={() => setIsAdminInPlayerView(true)}
-          onLogout={handleLogout}
-          onResetGame={handleResetGame}
-      />;
-  }
+  if (currentUser.name === 'admin' && !isAdminInPlayerView) return <AdminPanel onSwitchToPlayerView={() => setIsAdminInPlayerView(true)} onLogout={handleLogout} onResetGame={handleResetGame} />;
 
   return (
     <div className="min-h-screen bg-slate-900 text-white p-4 sm:p-8 bg-[radial-gradient(circle_at_top_left,_rgba(30,_58,_138,_0.4),_transparent_30%),_radial-gradient(circle_at_bottom_right,_rgba(17,_24,_39,_0.3),_transparent_40%)]">
+      {isSpeechBlocked && (
+        <div className="fixed top-0 left-0 right-0 bg-yellow-500 text-slate-900 p-4 text-center z-[100] shadow-lg flex items-center justify-center gap-4">
+            <p className="font-bold">A narração de voz está bloqueada.</p>
+            <button 
+                onClick={handleUnlockSpeech}
+                className="bg-slate-900 text-white font-bold py-2 px-4 rounded-lg hover:bg-slate-800 transition-colors"
+            >
+                Clique aqui para ativar
+            </button>
+        </div>
+      )}
       {showConfetti && <Confetti />}
-      <audio ref={applauseRef} src="https://cdn.pixabay.com/audio/2022/03/15/audio_2b22093512.mp3" preload="auto"></audio>
-      <audio ref={cheeringRef} src="https://cdn.pixabay.com/audio/2021/10/08/audio_7468f23af3.mp3" preload="auto"></audio>
+      <audio ref={applauseRef} src="https://actions.google.com/sounds/v1/crowds/battle_crowd_cheer_med.ogg" preload="auto"></audio>
+      <audio ref={cheeringRef} src="https://actions.google.com/sounds/v1/crowds/crowd_applause.ogg" preload="auto"></audio>
       
       <div className="max-w-7xl mx-auto relative">
         <div className="absolute top-2 right-2 flex gap-2 z-20">
@@ -454,7 +555,7 @@ const App: React.FC = () => {
                  )}
             </div>
 
-            {myCards.length === 0 && (
+            {myCards.length === 0 && !isGameActive && (
               <InfoCard icon="🎟️" title="Adquira suas Cartelas">
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-black/20 p-4 rounded-lg">
                   <div className="flex items-center gap-4">
