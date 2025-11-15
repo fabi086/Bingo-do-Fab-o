@@ -29,7 +29,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
   const sortedGames = [...scheduledGames].sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
 
   return (
-    <div className="min-h-screen bg-indigo-900 text-white p-4 sm:p-8 flex items-center justify-center">
+    <div className="min-h-screen bg-slate-900 text-white p-4 sm:p-8 flex items-center justify-center">
       <div className="w-full max-w-2xl space-y-8 relative">
         <div className="absolute top-0 right-0 flex gap-2">
             <button
@@ -48,7 +48,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
             </button>
         </div>
 
-        <h1 className="text-4xl font-black text-center text-yellow-300 pt-12 sm:pt-0">Painel do Administrador</h1>
+        <h1 className="text-4xl font-black text-center text-sky-300 pt-12 sm:pt-0">Painel do Administrador</h1>
         
         <InfoCard icon="⚙️" title="Modo de Jogo">
           <div className="flex justify-around p-4">
@@ -59,7 +59,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
                 value="line" 
                 checked={gameMode === 'line'} 
                 onChange={() => gameStateService.setGameMode('line')}
-                className="form-radio h-5 w-5 text-yellow-500 bg-gray-700 border-gray-600 focus:ring-yellow-600"
+                className="form-radio h-5 w-5 text-sky-500 bg-gray-700 border-gray-600 focus:ring-sky-600"
               />
               <span className="text-lg font-semibold">Linha / Vertical / Diagonal</span>
             </label>
@@ -70,7 +70,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
                 value="full" 
                 checked={gameMode === 'full'} 
                 onChange={() => gameStateService.setGameMode('full')}
-                className="form-radio h-5 w-5 text-yellow-500 bg-gray-700 border-gray-600 focus:ring-yellow-600"
+                className="form-radio h-5 w-5 text-sky-500 bg-gray-700 border-gray-600 focus:ring-sky-600"
               />
               <span className="text-lg font-semibold">Cartela Cheia</span>
             </label>
@@ -88,12 +88,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
                 type="datetime-local"
                 value={newGameTime}
                 onChange={(e) => setNewGameTime(e.target.value)}
-                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-yellow-400 focus:outline-none"
+                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-sky-400 focus:outline-none"
               />
             </div>
             <button
               onClick={handleAddGame}
-              className="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
             >
               Agendar Novo Jogo
             </button>

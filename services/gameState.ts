@@ -1,11 +1,11 @@
 import type { User, SharedGameState, GeneratedCard, GameMode, ScheduledGame } from '../types';
+import { supabase } from './supabaseClient';
 
-const GAME_STATE_KEY = 'bingoGameState';
+const GAME_STATE_ID = 'singleton'; // Use a fixed ID for our single row of state
 
 class GameStateService {
   private state: SharedGameState;
   private listeners: Set<(state: SharedGameState) => void>;
-  private channel: BroadcastChannel;
   private isInitialized = false;
 
   private initialState: SharedGameState = {
@@ -25,37 +25,49 @@ class GameStateService {
   constructor() {
     this.state = { ...this.initialState };
     this.listeners = new Set();
-    this.channel = new BroadcastChannel('bingo-game-state');
-    
-    this.channel.onmessage = (event) => {
-      // Received an update from another tab
-      this.state = event.data;
-      this.notifyListeners();
-    };
   }
 
-  initialize(): Promise<void> {
+  async initialize(): Promise<void> {
     if (this.isInitialized) return Promise.resolve();
 
-    try {
-        const storedState = localStorage.getItem(GAME_STATE_KEY);
-        if (storedState) {
-            this.state = JSON.parse(storedState);
-        } else {
-            // No state in storage, so let's use the initial one and save it
-            this.state = { ...this.initialState };
-            localStorage.setItem(GAME_STATE_KEY, JSON.stringify(this.state));
-        }
-    } catch (error) {
-        console.error("Error loading state from localStorage:", error);
-        this.state = { ...this.initialState };
+    // Fetch initial state from Supabase
+    const { data, error } = await supabase
+      .from('game_state')
+      .select('state')
+      .eq('id', GAME_STATE_ID)
+      .single();
+
+    if (error && error.code !== 'PGRST116') { // PGRST116 = 'exact one row not found'
+      console.error('Error fetching initial game state:', error);
+      this.state = { ...this.initialState };
+    } else if (data) {
+      this.state = data.state;
+    } else {
+      // No state found, so create it
+      console.log('No initial state found in DB, creating one.');
+      this.state = { ...this.initialState };
+      await this.updateState(this.state, true); // Force initial write
     }
     
+    // Subscribe to real-time updates
+    supabase
+        .channel('game-state-changes')
+        .on(
+            'postgres_changes',
+            { event: 'UPDATE', schema: 'public', table: 'game_state', filter: `id=eq.${GAME_STATE_ID}` },
+            (payload) => {
+                this.state = (payload.new as any).state;
+                this.notifyListeners();
+            }
+        )
+        .subscribe();
+
+
     this.isInitialized = true;
     this.notifyListeners(); // Notify with the loaded state
     return Promise.resolve();
   }
-
+  
   // --- Public API for components ---
 
   subscribe(callback: (state: SharedGameState) => void): () => void {
@@ -66,66 +78,66 @@ class GameStateService {
   getState(): SharedGameState {
     return this.state;
   }
-
-  // --- Authentication Actions ---
   
-  registerUser(newUser: User): boolean {
+  // --- Actions ---
+
+  async registerUser(newUser: User): Promise<boolean> {
     if (this.state.users.some(u => u.name === newUser.name)) {
         return false;
     }
-    this.updateState({ users: [...this.state.users, newUser] });
+    await this.updateState({ users: [...this.state.users, newUser] });
     return true;
   }
   
-  login(name: string): void {
+  async login(name: string): Promise<void> {
      if (!this.state.onlineUsers.includes(name)) {
-        this.updateState({ onlineUsers: [...this.state.onlineUsers, name] });
+        await this.updateState({ onlineUsers: [...this.state.onlineUsers, name] });
     }
   }
 
-  logout(name: string): void {
-    this.updateState({ onlineUsers: this.state.onlineUsers.filter(u => u !== name) });
+  async logout(name: string): Promise<void> {
+    await this.updateState({ onlineUsers: this.state.onlineUsers.filter(u => u !== name) });
   }
 
-  // --- Game Actions ---
-
-  addCards(newCards: GeneratedCard[]): void {
-    this.updateState({ generatedCards: [...this.state.generatedCards, ...newCards] });
+  async addCards(newCards: GeneratedCard[]): Promise<void> {
+    await this.updateState({ generatedCards: [...this.state.generatedCards, ...newCards] });
   }
 
-  resetGame(): void {
-    this.updateState({
+  async resetGame(): Promise<void> {
+    await this.updateState({
         drawnNumbers: [],
         bingoWinner: null,
         isGameActive: false,
         preGameCountdown: null,
         gameStartingId: null,
+        generatedCards: [], // Also clear cards on reset for a fresh game
+        onlineUsers: [], // Clear online users as well
     });
   }
 
-  setGameMode(mode: GameMode): void {
-    this.updateState({ gameMode: mode });
+  async setGameMode(mode: GameMode): Promise<void> {
+    await this.updateState({ gameMode: mode });
   }
 
-  addGame(startTime: string): void {
+  async addGame(startTime: string): Promise<void> {
      const newGame: ScheduledGame = { id: Date.now(), startTime };
-     this.updateState({ scheduledGames: [...this.state.scheduledGames, newGame] });
+     await this.updateState({ scheduledGames: [...this.state.scheduledGames, newGame] });
   }
 
-  removeGame(gameId: number): void {
-    this.updateState({ scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId) });
+  async removeGame(gameId: number): Promise<void> {
+    await this.updateState({ scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId) });
   }
   
-  setGameStartingId(id: number | null): void {
-    this.updateState({ gameStartingId: id });
+  async setGameStartingId(id: number | null): Promise<void> {
+    await this.updateState({ gameStartingId: id });
   }
 
-  setPreGameCountdown(countdown: number | null): void {
-    this.updateState({ preGameCountdown: countdown });
+  async setPreGameCountdown(countdown: number | null): Promise<void> {
+    await this.updateState({ preGameCountdown: countdown });
   }
   
-  startGame(gameId: number): void {
-      this.updateState({
+  async startGame(gameId: number): Promise<void> {
+      await this.updateState({
           isGameActive: true,
           preGameCountdown: null,
           scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId),
@@ -133,12 +145,12 @@ class GameStateService {
       });
   }
 
-  addDrawnNumber(number: number): void {
-      this.updateState({ drawnNumbers: [...this.state.drawnNumbers, number] });
+  async addDrawnNumber(number: number): Promise<void> {
+      await this.updateState({ drawnNumbers: [...this.state.drawnNumbers, number] });
   }
 
-  setWinner(winner: { cardId: string; playerName: string }): void {
-      this.updateState({
+  async setWinner(winner: { cardId: string; playerName: string }): Promise<void> {
+      await this.updateState({
           bingoWinner: winner,
           isGameActive: false,
           playerWins: {
@@ -153,20 +165,19 @@ class GameStateService {
   private notifyListeners(): void {
     this.listeners.forEach(callback => callback(this.state));
   }
-
-  private updateState(newState: Partial<SharedGameState>): void {
+  
+  private async updateState(newState: Partial<SharedGameState>, isInitial: boolean = false): Promise<void> {
     const updatedState = { ...this.state, ...newState };
-    this.state = updatedState; // Update locally first
-    
-    try {
-        localStorage.setItem(GAME_STATE_KEY, JSON.stringify(updatedState));
-        this.channel.postMessage(updatedState); // Broadcast to other tabs
-    } catch (error) {
-        console.error("Failed to save state to localStorage:", error);
-    }
-    
-    // Notify local listeners immediately
+    this.state = updatedState; // Update locally immediately
     this.notifyListeners();
+
+    if (isInitial) {
+        const { error } = await supabase.from('game_state').insert({ id: GAME_STATE_ID, state: updatedState });
+        if (error) console.error("Failed to create initial state in Supabase:", error);
+    } else {
+        const { error } = await supabase.from('game_state').update({ state: updatedState }).eq('id', GAME_STATE_ID);
+        if (error) console.error("Failed to save state to Supabase:", error);
+    }
   }
 }
 

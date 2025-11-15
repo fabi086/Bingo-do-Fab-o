@@ -29,7 +29,7 @@ const BingoCard: React.FC<BingoCardProps> = ({ cardData, drawnNumbers, isAutoMar
   }
 
   return (
-    <div className="bg-indigo-800/50 p-4 rounded-lg border-2 border-purple-400 shadow-2xl animate-fade-in">
+    <div className="bg-slate-800/50 p-4 rounded-lg border-2 border-blue-500 shadow-2xl animate-fade-in">
       <div className="grid grid-cols-5 gap-2">
         {headers.map((letter, index) => (
           <div key={letter} className="flex justify-center items-center">
@@ -43,8 +43,8 @@ const BingoCard: React.FC<BingoCardProps> = ({ cardData, drawnNumbers, isAutoMar
 
             const cellClasses = `relative flex items-center justify-center h-12 md:h-16 rounded-md font-bold text-xl md:text-2xl transition-all duration-300
               ${isFreeSpace 
-                ? 'bg-yellow-400 text-yellow-900' 
-                : 'bg-white/80 text-indigo-900'
+                ? 'bg-sky-400 text-sky-900' 
+                : 'bg-white/80 text-slate-900'
               }
               ${!isAutoMarking && typeof num === 'number' ? 'cursor-pointer hover:bg-white/100' : ''}
             `;
@@ -62,7 +62,7 @@ const BingoCard: React.FC<BingoCardProps> = ({ cardData, drawnNumbers, isAutoMar
               {isMarked && (
                   <div 
                   className="absolute inset-0 flex items-center justify-center rounded-md bg-opacity-70 transition-transform duration-300 scale-100 animate-pop-in"
-                  style={{ backgroundColor: isFreeSpace ? '#FBBF24' : colors[colIndex] }}
+                  style={{ backgroundColor: isFreeSpace ? '#38BDF8' : colors[colIndex] }}
                   >
                     <span className="text-white text-shadow-lg font-black text-3xl" style={{ textShadow: '1px 1px 2px black' }}>
                       {isFreeSpace ? '★' : num}
