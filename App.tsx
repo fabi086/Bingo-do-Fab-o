@@ -166,7 +166,9 @@ const App: React.FC = () => {
     utterance.volume = isMuted ? 0 : volume;
     utterance.onend = () => onEndCallback?.();
     utterance.onerror = (e) => { 
-        console.error(`Speech synthesis error: ${e.error}`, e); 
+        if (e.error !== 'interrupted') {
+            console.error(`Speech synthesis error:`, e); 
+        }
         onEndCallback?.(); 
     }
     window.speechSynthesis.cancel();
