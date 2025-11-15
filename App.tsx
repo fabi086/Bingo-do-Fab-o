@@ -1,5 +1,5 @@
+
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-// FIX: import GameMode type
 import type { Prize, BingoCardData, GeneratedCard, User, GameMode } from './types';
 import { generateBingoCard } from './services/geminiService';
 import { gameStateService } from './services/gameState';
@@ -80,6 +80,7 @@ const App: React.FC = () => {
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [cardViewMode, setCardViewMode] = useLocalStorage<'carousel' | 'grid'>('cardViewMode', 'carousel');
   const [isAdminInPlayerView, setIsAdminInPlayerView] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   const applauseRef = useRef<HTMLAudioElement>(null);
   const cheeringRef = useRef<HTMLAudioElement>(null);
@@ -106,8 +107,12 @@ const App: React.FC = () => {
   
   // --- Effects ---
 
-  // Subscribe to game state service
+  // Initialize and Subscribe to game state service
   useEffect(() => {
+    gameStateService.initialize().then(() => {
+        setIsLoading(false);
+    });
+
     const unsubscribe = gameStateService.subscribe(setGameState);
     return unsubscribe;
   }, []);
@@ -167,7 +172,7 @@ const App: React.FC = () => {
     utterance.onend = () => onEndCallback?.();
     utterance.onerror = (e) => { 
         if (e.error !== 'interrupted') {
-            console.error(`Speech synthesis error:`, e); 
+            console.error(`Speech synthesis error:`, e.error); 
         }
         onEndCallback?.(); 
     }
@@ -206,16 +211,13 @@ const App: React.FC = () => {
       const { B, I, N, G, O } = card.cardData;
       const allNumbersOnCard = [...B, ...I, ...N, ...G, ...O].filter(n => typeof n === 'number') as number[];
       
-      // Determine whose marking mode to respect (the card owner's)
-      // For this simulation, we'll just use the current player's mode for checking their own bingo.
-      // A full implementation would need to know each player's marking mode.
       const marksForCard = isAutoMarking ? numbers : new Set(allManualMarks[card.id] || []);
 
       const checkLine = (line: (number | string)[]) => line.every(num => num === 'LIVRE' || marksForCard.has(num as number));
       
       if (mode === 'full') {
         if (allNumbersOnCard.every(num => marksForCard.has(num))) return { cardId: card.id, playerName: card.owner };
-      } else { // modo linha
+      } else {
         const columns = [B, I, N, G, O];
         for(const col of columns) if(checkLine(col)) return { cardId: card.id, playerName: card.owner };
         for (let i = 0; i < 5; i++) {
@@ -228,7 +230,7 @@ const App: React.FC = () => {
       }
     }
     return null;
-  }, [isAutoMarking]); // Depends on the current player's auto-marking status
+  }, [isAutoMarking]);
     
   const handleDrawNumber = useCallback(() => {
     const currentState = gameStateService.getState();
@@ -247,7 +249,6 @@ const App: React.FC = () => {
         const updatedDrawnNumbers = [...latestState.drawnNumbers, newNumber];
         const winner = checkForBingo(latestState.generatedCards, new Set(updatedDrawnNumbers), latestState.gameMode, manualMarks);
         if(winner) {
-          // This check is local, so it only affects the person who might have missed it
           if (!isAutoMarking) setMissedBingo(true); 
           gameStateService.setWinner(winner);
 
@@ -261,11 +262,12 @@ const App: React.FC = () => {
   }, [speak, checkForBingo, manualMarks, isAutoMarking, setMissedBingo]);
 
   const startPreGameCountdown = useCallback(() => {
-    if (isGameActive || preGameCountdown !== null) return;
+    const currentState = gameStateService.getState();
+    if (currentState.isGameActive || currentState.preGameCountdown !== null) return;
     const countdownStart = 10;
     gameStateService.setPreGameCountdown(countdownStart);
     speak(`Atenção, o bingo vai começar em ${countdownStart} segundos. Boa sorte!`);
-  }, [isGameActive, preGameCountdown, speak]);
+  }, [speak]);
 
   const handleResetGame = () => {
     gameStateService.resetGame();
@@ -338,6 +340,10 @@ const App: React.FC = () => {
     }
   }, [bingoWinner, myCards]);
 
+  if (isLoading) {
+    return <div className="min-h-screen bg-indigo-900 text-white flex items-center justify-center text-2xl font-bold">Carregando o Bingo do Fabão...</div>;
+  }
+  
   if (!currentUser) return <Auth onLoginSuccess={setCurrentUser} allUsers={users} />;
   
   if (currentUser.name === 'admin' && !isAdminInPlayerView) {
@@ -349,7 +355,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-8 bg-[radial-gradient(circle_at_top_left,_rgba(31,_41,_55,_1),_transparent_30%),_radial-gradient(circle_at_bottom_right,_rgba(59,_130,_246,_0.3),_transparent_40%)]">
+    <div className="min-h-screen bg-indigo-900 text-white p-4 sm:p-8 bg-[radial-gradient(circle_at_top_left,_rgba(86,_30,_203,_0.4),_transparent_30%),_radial-gradient(circle_at_bottom_right,_rgba(251,_191,_36,_0.3),_transparent_40%)]">
       {showConfetti && <Confetti />}
       <audio ref={applauseRef} src="https://cdn.pixabay.com/audio/2022/03/15/audio_2b22093512.mp3" preload="auto"></audio>
       <audio ref={cheeringRef} src="https://cdn.pixabay.com/audio/2021/10/08/audio_7468f23af3.mp3" preload="auto"></audio>
@@ -374,14 +380,14 @@ const App: React.FC = () => {
             <BingoBall letter="N" color="#22C55E" className="w-16 h-16 text-4xl" /> <BingoBall letter="G" color="#EAB308" className="w-16 h-16 text-4xl" />
             <BingoBall letter="O" color="#A855F7" className="w-16 h-16 text-4xl" />
           </div>
-          <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 to-blue-500">Bingo do Fabão</h1>
+          <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 to-orange-400">Bingo do Fabão</h1>
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
-            <div className="relative bg-white/5 backdrop-blur-sm p-6 rounded-2xl border border-white/10 shadow-lg">
+            <div className="relative bg-black/20 backdrop-blur-sm p-6 rounded-2xl border border-purple-400/30 shadow-lg">
                 <div className="absolute top-4 right-4 flex items-center gap-3">
-                    <input type="range" min="0" max="1" step="0.1" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-24 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-cyan-500"/>
+                    <input type="range" min="0" max="1" step="0.1" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-24 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-yellow-500"/>
                     <button onClick={() => setIsMuted(!isMuted)} className={`p-2 rounded-full transition-colors ${isMuted ? 'bg-red-500/80' : 'bg-gray-600/50 hover:bg-gray-500/50'}`} aria-label={isMuted ? "Ativar som" : "Desativar som"}>
                         {isMuted ? <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15zM17 14l4-4m0 4l-4-4" /></svg> : <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>}
                     </button>
@@ -392,7 +398,7 @@ const App: React.FC = () => {
                         {preGameCountdown !== null ? (
                              <><p className="text-xl text-gray-300 mb-2">O jogo começa em:</p><p className="text-6xl font-bold text-yellow-300 tracking-widest mb-4 animate-pulse">{preGameCountdown}</p></>
                         ) : nextGame ? (
-                            <><p className="text-xl text-gray-300 mb-2">Próximo jogo em:</p><p className="text-4xl font-bold text-cyan-300 tracking-widest mb-4">{countdown}</p></>
+                            <><p className="text-xl text-gray-300 mb-2">Próximo jogo em:</p><p className="text-4xl font-bold text-yellow-300 tracking-widest mb-4">{countdown}</p></>
                         ) : (<p className="text-xl text-gray-300">Nenhum jogo agendado. Volte mais tarde!</p>)}
                     </div>
                 )}
@@ -404,7 +410,7 @@ const App: React.FC = () => {
                         </div>
                         <div className="bg-black/20 p-4 rounded-lg">
                            <p className="text-sm text-gray-400 mb-2">Números Sorteados ({drawnNumbers.length}/75):</p>
-                           <div className="flex flex-wrap gap-2 justify-center h-48 overflow-y-auto">{Array.from({length: 75}, (_, i) => i + 1).map(num => (<div key={num} className={`w-8 h-8 flex items-center justify-center rounded-full text-sm font-bold ${drawnNumbers.includes(num) ? 'bg-cyan-400 text-gray-900' : 'bg-gray-700/50 text-gray-400'}`}>{num}</div>))}</div>
+                           <div className="flex flex-wrap gap-2 justify-center h-48 overflow-y-auto">{Array.from({length: 75}, (_, i) => i + 1).map(num => (<div key={num} className={`w-8 h-8 flex items-center justify-center rounded-full text-sm font-bold ${drawnNumbers.includes(num) ? 'bg-yellow-400 text-gray-900' : 'bg-gray-700/50 text-gray-400'}`}>{num}</div>))}</div>
                         </div>
                      </div>
                 )}
@@ -427,14 +433,14 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-4">
                     <label className="font-bold text-lg">Quantidade:</label>
                     <div className="flex items-center">
-                        <button onClick={() => setCardQuantity(p => Math.max(1, p - 1))} className="w-10 h-10 bg-cyan-600 text-white font-bold text-2xl rounded-l-md hover:bg-cyan-700 disabled:bg-gray-600" aria-label="Diminuir">-</button>
+                        <button onClick={() => setCardQuantity(p => Math.max(1, p - 1))} className="w-10 h-10 bg-yellow-600 text-white font-bold text-2xl rounded-l-md hover:bg-yellow-700 disabled:bg-gray-600" aria-label="Diminuir">-</button>
                         <span className="w-16 h-10 flex items-center justify-center bg-gray-700 text-white font-bold text-xl">{cardQuantity}</span>
-                        <button onClick={() => setCardQuantity(p => p + 1)} className="w-10 h-10 bg-cyan-600 text-white font-bold text-2xl rounded-r-md hover:bg-cyan-700" aria-label="Aumentar">+</button>
+                        <button onClick={() => setCardQuantity(p => p + 1)} className="w-10 h-10 bg-yellow-600 text-white font-bold text-2xl rounded-r-md hover:bg-yellow-700" aria-label="Aumentar">+</button>
                     </div>
                   </div>
-                  <div className="text-center sm:text-right"><p className="text-2xl font-bold text-cyan-300">Total: R$ {totalPrice.toFixed(2)}</p><p className="text-sm text-gray-400">(2 por R$ 30,00)</p></div>
+                  <div className="text-center sm:text-right"><p className="text-2xl font-bold text-yellow-300">Total: R$ {totalPrice.toFixed(2)}</p><p className="text-sm text-gray-400">(2 por R$ 30,00)</p></div>
                 </div>
-                <button onClick={handleBuyCards} disabled={isGenerating} className="mt-4 w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white font-bold py-3 px-4 rounded-lg text-lg transition-all transform hover:scale-105 disabled:opacity-50">{isGenerating ? 'Gerando...' : 'Comprar e Gerar Cartelas'}</button>
+                <button onClick={handleBuyCards} disabled={isGenerating} className="mt-4 w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-all transform hover:scale-105 disabled:opacity-50">{isGenerating ? 'Gerando...' : 'Comprar e Gerar Cartelas'}</button>
                 {error && <p className="text-red-400 mt-2">{error}</p>}
               </InfoCard>
             )}
@@ -444,8 +450,8 @@ const App: React.FC = () => {
                 <div className="flex flex-wrap justify-between items-center mb-4 gap-4">
                   <h2 className="text-3xl font-bold text-white">Minhas Cartelas ({currentUser.name === 'admin' ? 'Fábio' : currentUser.name})</h2>
                   <div className="flex items-center gap-4">
-                     <div className="flex items-center bg-gray-700 rounded-full p-1"><button onClick={() => setCardViewMode('carousel')} className={`px-3 py-1 text-sm rounded-full ${cardViewMode === 'carousel' ? 'bg-cyan-500 text-white' : 'text-gray-300'}`}>Carrossel</button><button onClick={() => setCardViewMode('grid')} className={`px-3 py-1 text-sm rounded-full ${cardViewMode === 'grid' ? 'bg-cyan-500 text-white' : 'text-gray-300'}`}>Grade</button></div>
-                      <label className="flex items-center cursor-pointer"><span className="mr-3 text-sm font-medium text-gray-300">Marcar Auto.</span><div className="relative"><input type="checkbox" className="sr-only" checked={isAutoMarking} onChange={handleToggleAutoMarking} /><div className="block bg-gray-600 w-14 h-8 rounded-full"></div><div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${isAutoMarking ? 'transform translate-x-6 bg-cyan-400' : ''}`}></div></div></label>
+                     <div className="flex items-center bg-gray-700 rounded-full p-1"><button onClick={() => setCardViewMode('carousel')} className={`px-3 py-1 text-sm rounded-full ${cardViewMode === 'carousel' ? 'bg-yellow-500 text-black' : 'text-gray-300'}`}>Carrossel</button><button onClick={() => setCardViewMode('grid')} className={`px-3 py-1 text-sm rounded-full ${cardViewMode === 'grid' ? 'bg-yellow-500 text-black' : 'text-gray-300'}`}>Grade</button></div>
+                      <label className="flex items-center cursor-pointer"><span className="mr-3 text-sm font-medium text-gray-300">Marcar Auto.</span><div className="relative"><input type="checkbox" className="sr-only" checked={isAutoMarking} onChange={handleToggleAutoMarking} /><div className="block bg-gray-600 w-14 h-8 rounded-full"></div><div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${isAutoMarking ? 'transform translate-x-6 bg-yellow-400' : ''}`}></div></div></label>
                   </div>
                 </div>
 
@@ -468,7 +474,7 @@ const App: React.FC = () => {
           </div>
           <aside className="space-y-8">
             <InfoCard icon="🗓️" title="Próximo Jogo"><p className="text-lg font-semibold">{nextGame ? new Date(nextGame.startTime).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }) : 'N/A'}</p><p>Início às {nextGame ? new Date(nextGame.startTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : 'N/A'}</p></InfoCard>
-            <InfoCard icon="🏆" title="Prêmios">{prizes.map(p => (<div key={p.id} className="flex justify-between items-center border-b border-white/10 pb-2 last:border-b-0"><span>{p.name}</span><span className="font-bold text-cyan-300">{p.value}</span></div>))}</InfoCard>
+            <InfoCard icon="🏆" title="Prêmios">{prizes.map(p => (<div key={p.id} className="flex justify-between items-center border-b border-white/10 pb-2 last:border-b-0"><span>{p.name}</span><span className="font-bold text-yellow-300">{p.value}</span></div>))}</InfoCard>
             <InfoCard icon="👥" title="Jogadores na Sala">
                 <ul className="space-y-2 max-h-48 overflow-y-auto">
                     {allPlayers.map(name => {

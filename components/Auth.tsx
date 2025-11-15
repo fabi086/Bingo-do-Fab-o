@@ -44,10 +44,10 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-4 flex items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(31,_41,_55,_1),_transparent_30%),_radial-gradient(circle_at_bottom_right,_rgba(59,_130,_246,_0.3),_transparent_40%)]">
+    <div className="min-h-screen bg-indigo-900 text-white p-4 flex items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(86,_30,_203,_0.4),_transparent_30%),_radial-gradient(circle_at_bottom_right,_rgba(251,_191,_36,_0.3),_transparent_40%)]">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-            <h1 className="text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-300 to-blue-500">Bingo do Fabão</h1>
+            <h1 className="text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 to-orange-400">Bingo do Fabão</h1>
             <p className="text-xl text-gray-300 mt-2">Bingo Beneficente</p>
         </div>
         <InfoCard icon={isLoginView ? '🔑' : '👤'} title={isLoginView ? 'Login' : 'Cadastro'}>
@@ -58,7 +58,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
                 type="text"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-cyan-400 focus:outline-none"
+                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-yellow-400 focus:outline-none"
                 required
               />
             </div>
@@ -68,7 +68,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-cyan-400 focus:outline-none"
+                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-yellow-400 focus:outline-none"
                 required
               />
             </div>
@@ -80,7 +80,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
                   value={pixKey}
                   onChange={e => setPixKey(e.target.value)}
                   placeholder="Para futuros prêmios!"
-                  className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-cyan-400 focus:outline-none"
+                  className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-yellow-400 focus:outline-none"
                   required
                 />
               </div>
@@ -88,7 +88,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <button
               type="submit"
-              className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white font-bold py-3 rounded-lg text-lg transition-all"
+              className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white font-bold py-3 rounded-lg text-lg transition-all"
             >
               {isLoginView ? 'Entrar' : 'Cadastrar e Entrar'}
             </button>
@@ -98,7 +98,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
               setIsLoginView(!isLoginView);
               setError('');
             }}
-            className="w-full mt-4 text-cyan-300 hover:underline"
+            className="w-full mt-4 text-yellow-300 hover:underline"
           >
             {isLoginView ? 'Não tem uma conta? Cadastre-se' : 'Já tem uma conta? Faça o login'}
           </button>

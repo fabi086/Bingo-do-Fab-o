@@ -29,7 +29,7 @@ const BingoCard: React.FC<BingoCardProps> = ({ cardData, drawnNumbers, isAutoMar
   }
 
   return (
-    <div className="bg-blue-900/50 p-4 rounded-lg border-2 border-blue-400 shadow-2xl animate-fade-in">
+    <div className="bg-indigo-800/50 p-4 rounded-lg border-2 border-purple-400 shadow-2xl animate-fade-in">
       <div className="grid grid-cols-5 gap-2">
         {headers.map((letter, index) => (
           <div key={letter} className="flex justify-center items-center">
@@ -44,7 +44,7 @@ const BingoCard: React.FC<BingoCardProps> = ({ cardData, drawnNumbers, isAutoMar
             const cellClasses = `relative flex items-center justify-center h-12 md:h-16 rounded-md font-bold text-xl md:text-2xl transition-all duration-300
               ${isFreeSpace 
                 ? 'bg-yellow-400 text-yellow-900' 
-                : 'bg-white/80 text-blue-900'
+                : 'bg-white/80 text-indigo-900'
               }
               ${!isAutoMarking && typeof num === 'number' ? 'cursor-pointer hover:bg-white/100' : ''}
             `;

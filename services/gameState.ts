@@ -1,27 +1,65 @@
 import type { User, SharedGameState, GeneratedCard, GameMode, ScheduledGame } from '../types';
 
+const GAME_STATE_KEY = 'bingoGameState';
+
 class GameStateService {
   private state: SharedGameState;
-  private readonly channel: BroadcastChannel;
   private listeners: Set<(state: SharedGameState) => void>;
+  private channel: BroadcastChannel;
+  private isInitialized = false;
+
+  private initialState: SharedGameState = {
+    users: [{ name: 'admin', password: 'admin', pixKey: 'admin' }],
+    onlineUsers: [],
+    generatedCards: [],
+    drawnNumbers: [],
+    isGameActive: false,
+    bingoWinner: null,
+    playerWins: {},
+    gameMode: 'line',
+    scheduledGames: [],
+    preGameCountdown: null,
+    gameStartingId: null,
+  };
 
   constructor() {
-    this.state = this.loadStateFromLocalStorage();
-    this.channel = new BroadcastChannel('bingo-game-state');
+    this.state = { ...this.initialState };
     this.listeners = new Set();
-
+    this.channel = new BroadcastChannel('bingo-game-state');
+    
     this.channel.onmessage = (event) => {
+      // Received an update from another tab
       this.state = event.data;
-      this.saveStateToLocalStorage();
       this.notifyListeners();
     };
+  }
+
+  initialize(): Promise<void> {
+    if (this.isInitialized) return Promise.resolve();
+
+    try {
+        const storedState = localStorage.getItem(GAME_STATE_KEY);
+        if (storedState) {
+            this.state = JSON.parse(storedState);
+        } else {
+            // No state in storage, so let's use the initial one and save it
+            this.state = { ...this.initialState };
+            localStorage.setItem(GAME_STATE_KEY, JSON.stringify(this.state));
+        }
+    } catch (error) {
+        console.error("Error loading state from localStorage:", error);
+        this.state = { ...this.initialState };
+    }
+    
+    this.isInitialized = true;
+    this.notifyListeners(); // Notify with the loaded state
+    return Promise.resolve();
   }
 
   // --- Public API for components ---
 
   subscribe(callback: (state: SharedGameState) => void): () => void {
     this.listeners.add(callback);
-    // Return an unsubscribe function
     return () => this.listeners.delete(callback);
   }
 
@@ -33,7 +71,7 @@ class GameStateService {
   
   registerUser(newUser: User): boolean {
     if (this.state.users.some(u => u.name === newUser.name)) {
-        return false; // User already exists
+        return false;
     }
     this.updateState({ users: [...this.state.users, newUser] });
     return true;
@@ -110,7 +148,6 @@ class GameStateService {
       });
   }
 
-
   // --- Private methods ---
 
   private notifyListeners(): void {
@@ -118,57 +155,18 @@ class GameStateService {
   }
 
   private updateState(newState: Partial<SharedGameState>): void {
-    this.state = { ...this.state, ...newState };
-    this.saveStateToLocalStorage();
-    this.channel.postMessage(this.state);
+    const updatedState = { ...this.state, ...newState };
+    this.state = updatedState; // Update locally first
+    
+    try {
+        localStorage.setItem(GAME_STATE_KEY, JSON.stringify(updatedState));
+        this.channel.postMessage(updatedState); // Broadcast to other tabs
+    } catch (error) {
+        console.error("Failed to save state to localStorage:", error);
+    }
+    
+    // Notify local listeners immediately
     this.notifyListeners();
-  }
-
-  private saveStateToLocalStorage(): void {
-    try {
-      localStorage.setItem('bingoSharedState', JSON.stringify(this.state));
-    } catch (error) {
-      console.error("Failed to save shared state to localStorage:", error);
-    }
-  }
-
-  private loadStateFromLocalStorage(): SharedGameState {
-    try {
-      const saved = localStorage.getItem('bingoSharedState');
-      const initialState: SharedGameState = {
-        users: [{ name: 'admin', password: 'admin', pixKey: 'admin' }],
-        onlineUsers: [],
-        generatedCards: [],
-        drawnNumbers: [],
-        isGameActive: false,
-        bingoWinner: null,
-        playerWins: {},
-        gameMode: 'line',
-        scheduledGames: [],
-        preGameCountdown: null,
-        gameStartingId: null,
-      };
-      // On load, reset online users as we don't know who is actually online
-      const loadedState = saved ? JSON.parse(saved) : initialState;
-      loadedState.onlineUsers = []; 
-      return loadedState;
-    } catch (error) {
-      console.error("Failed to load shared state from localStorage:", error);
-      // Fallback to a clean initial state
-      return {
-        users: [{ name: 'admin', password: 'admin', pixKey: 'admin' }],
-        onlineUsers: [],
-        generatedCards: [],
-        drawnNumbers: [],
-        isGameActive: false,
-        bingoWinner: null,
-        playerWins: {},
-        gameMode: 'line',
-        scheduledGames: [],
-        preGameCountdown: null,
-        gameStartingId: null,
-      };
-    }
   }
 }
 
