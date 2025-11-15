@@ -34,3 +34,17 @@ export interface ScheduledGame {
   id: number;
   startTime: string; // ISO string format
 }
+
+export interface SharedGameState {
+  users: User[];
+  onlineUsers: string[];
+  generatedCards: GeneratedCard[];
+  drawnNumbers: number[];
+  isGameActive: boolean;
+  bingoWinner: { cardId: string; playerName: string } | null;
+  playerWins: PlayerWin;
+  gameMode: GameMode;
+  scheduledGames: ScheduledGame[];
+  preGameCountdown: number | null;
+  gameStartingId: number | null;
+}

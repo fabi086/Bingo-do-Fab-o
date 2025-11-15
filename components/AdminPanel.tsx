@@ -1,24 +1,27 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { GameMode, ScheduledGame } from '../types';
+import { gameStateService } from '../services/gameState';
 import InfoCard from './InfoCard';
 
 interface AdminPanelProps {
-  gameMode: GameMode;
-  onGameModeChange: (mode: GameMode) => void;
-  scheduledGames: ScheduledGame[];
-  onAddGame: (startTime: string) => void;
-  onRemoveGame: (gameId: number) => void;
   onSwitchToPlayerView: () => void;
   onLogout: () => void;
   onResetGame: () => void;
 }
 
-const AdminPanel: React.FC<AdminPanelProps> = ({ gameMode, onGameModeChange, scheduledGames, onAddGame, onRemoveGame, onSwitchToPlayerView, onLogout, onResetGame }) => {
+const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout, onResetGame }) => {
+  const [gameState, setGameState] = useState(gameStateService.getState());
+  const { gameMode, scheduledGames } = gameState;
   const [newGameTime, setNewGameTime] = useState('');
+
+  useEffect(() => {
+    const unsubscribe = gameStateService.subscribe(setGameState);
+    return unsubscribe;
+  }, []);
 
   const handleAddGame = () => {
     if (newGameTime) {
-      onAddGame(new Date(newGameTime).toISOString());
+      gameStateService.addGame(new Date(newGameTime).toISOString());
       setNewGameTime('');
     }
   };
@@ -55,7 +58,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ gameMode, onGameModeChange, sch
                 name="gameMode" 
                 value="line" 
                 checked={gameMode === 'line'} 
-                onChange={() => onGameModeChange('line')}
+                onChange={() => gameStateService.setGameMode('line')}
                 className="form-radio h-5 w-5 text-cyan-500 bg-gray-700 border-gray-600 focus:ring-cyan-600"
               />
               <span className="text-lg font-semibold">Linha / Vertical / Diagonal</span>
@@ -66,7 +69,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ gameMode, onGameModeChange, sch
                 name="gameMode" 
                 value="full" 
                 checked={gameMode === 'full'} 
-                onChange={() => onGameModeChange('full')} 
+                onChange={() => gameStateService.setGameMode('full')}
                 className="form-radio h-5 w-5 text-cyan-500 bg-gray-700 border-gray-600 focus:ring-cyan-600"
               />
               <span className="text-lg font-semibold">Cartela Cheia</span>
@@ -95,7 +98,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ gameMode, onGameModeChange, sch
               Agendar Novo Jogo
             </button>
              <button
-              onClick={() => onAddGame(new Date(Date.now() + 30000).toISOString())}
+              onClick={() => gameStateService.addGame(new Date(Date.now() + 30000).toISOString())}
               className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
             >
               Jogo Instantâneo (inicia em 30s)
@@ -109,7 +112,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ gameMode, onGameModeChange, sch
                   <span className="font-medium">
                     {new Date(game.startTime).toLocaleString('pt-BR')}
                   </span>
-                  <button onClick={() => onRemoveGame(game.id)} className="text-red-400 hover:text-red-600 font-bold text-sm">
+                  <button onClick={() => gameStateService.removeGame(game.id)} className="text-red-400 hover:text-red-600 font-bold text-sm">
                     Remover
                   </button>
                 </li>

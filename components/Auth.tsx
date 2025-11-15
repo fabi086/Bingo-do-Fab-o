@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
 import type { User } from '../types';
+import { gameStateService } from '../services/gameState';
 import InfoCard from './InfoCard';
 
 interface AuthProps {
   onLoginSuccess: (user: User) => void;
-  users: User[];
-  setUsers: React.Dispatch<React.SetStateAction<User[]>>;
+  allUsers: User[];
 }
 
-const Auth: React.FC<AuthProps> = ({ onLoginSuccess, users, setUsers }) => {
+const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
   const [isLoginView, setIsLoginView] = useState(true);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -18,7 +18,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, users, setUsers }) => {
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const user = users.find(u => u.name === name && u.password === password);
+    const user = allUsers.find(u => u.name === name && u.password === password);
     if (user) {
       onLoginSuccess(user);
     } else {
@@ -33,14 +33,14 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, users, setUsers }) => {
       setError('Todos os campos são obrigatórios.');
       return;
     }
-    if (users.some(u => u.name === name)) {
-      setError('Este nome de usuário já existe.');
-      return;
-    }
-
+    
     const newUser: User = { name, password, pixKey };
-    setUsers(prev => [...prev, newUser]);
-    onLoginSuccess(newUser);
+    
+    if (gameStateService.registerUser(newUser)) {
+        onLoginSuccess(newUser);
+    } else {
+        setError('Este nome de usuário já existe.');
+    }
   };
 
   return (

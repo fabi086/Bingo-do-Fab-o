@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import type { Prize, BingoCardData, GeneratedCard, User, GameMode, ScheduledGame, PlayerWin } from './types';
+// FIX: import GameMode type
+import type { Prize, BingoCardData, GeneratedCard, User, GameMode } from './types';
 import { generateBingoCard } from './services/geminiService';
+import { gameStateService } from './services/gameState';
 import BingoBall from './components/BingoBall';
 import InfoCard from './components/InfoCard';
 import BingoCard from './components/BingoCard';
@@ -59,36 +61,30 @@ const Confetti: React.FC = () => (
 
 
 const App: React.FC = () => {
-  const [users, setUsers] = useLocalStorage<User[]>('bingoUsers', [{ name: 'admin', password: 'admin', pixKey: 'admin' }]);
+  // --- Shared State from Service ---
+  const [gameState, setGameState] = useState(gameStateService.getState());
+  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, playerWins, gameMode, scheduledGames, preGameCountdown, gameStartingId } = gameState;
+
+  // --- Local State (per-device/user) ---
   const [currentUser, setCurrentUser] = useLocalStorage<User | null>('bingoCurrentUser', null);
   const [cardQuantity, setCardQuantity] = useState(1);
-  const [generatedCards, setGeneratedCards] = useLocalStorage<GeneratedCard[]>('bingoCards', []);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  const [drawnNumbers, setDrawnNumbers] = useLocalStorage<number[]>('drawnNumbers', []);
-  const [isGameActive, setIsGameActive] = useLocalStorage('isGameActive', false);
-  const [bingoWinner, setBingoWinner] = useLocalStorage<{ cardId: string, playerName: string } | null>('bingoWinner', null);
   const [countdown, setCountdown] = useState('');
-  const [preGameCountdown, setPreGameCountdown] = useState<number | null>(null);
   const [showConfetti, setShowConfetti] = useState(false);
-  
   const [isMuted, setIsMuted] = useLocalStorage('isMuted', false);
   const [volume, setVolume] = useLocalStorage('narratorVolume', 0.8);
-  
   const [isAutoMarking, setIsAutoMarking] = useLocalStorage('isAutoMarking', true);
   const [manualMarks, setManualMarks] = useLocalStorage<Record<string, (number|string)[]>>('manualMarks', {});
   const [missedBingo, setMissedBingo] = useLocalStorage('missedBingo', false);
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [cardViewMode, setCardViewMode] = useLocalStorage<'carousel' | 'grid'>('cardViewMode', 'carousel');
-
-  const [playerWins, setPlayerWins] = useLocalStorage<PlayerWin>('playerWins', {});
-  const [gameMode, setGameMode] = useLocalStorage<GameMode>('gameMode', 'line');
-  const [scheduledGames, setScheduledGames] = useLocalStorage<ScheduledGame[]>('scheduledGames', []);
-  
-  const [gameStartingId, setGameStartingId] = useState<number | null>(null);
   const [isAdminInPlayerView, setIsAdminInPlayerView] = useState(false);
 
+  const applauseRef = useRef<HTMLAudioElement>(null);
+  const cheeringRef = useRef<HTMLAudioElement>(null);
+
+  // --- Memos and Derived State ---
   const nextGame = useMemo(() => {
     const now = new Date().getTime();
     const upcomingGames = scheduledGames
@@ -97,28 +93,45 @@ const App: React.FC = () => {
     return upcomingGames[0] || null;
   }, [scheduledGames]);
 
-  const applauseRef = useRef<HTMLAudioElement>(null);
-  const cheeringRef = useRef<HTMLAudioElement>(null);
-
   const myCards = useMemo(() => generatedCards.filter(c => c.owner === currentUser?.name), [generatedCards, currentUser]);
   
   const allPlayers = useMemo(() => {
-    return users.map(u => u.name === 'admin' ? 'Fábio' : u.name).sort();
-  }, [users]);
+    return onlineUsers.map(u => u === 'admin' ? 'Fábio' : u).sort();
+  }, [onlineUsers]);
 
   const totalPrice = useMemo(() => {
     const pairs = Math.floor(cardQuantity / 2); const singles = cardQuantity % 2;
     return pairs * prices.double + singles * prices.single;
   }, [cardQuantity]);
+  
+  // --- Effects ---
 
+  // Subscribe to game state service
+  useEffect(() => {
+    const unsubscribe = gameStateService.subscribe(setGameState);
+    return unsubscribe;
+  }, []);
+
+  // Handle user login/logout for online status
+  useEffect(() => {
+    if (currentUser) {
+      gameStateService.login(currentUser.name);
+    }
+    const handleBeforeUnload = () => {
+      if (currentUser) gameStateService.logout(currentUser.name);
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [currentUser]);
+  
   const handleLogout = () => {
+    if (currentUser) gameStateService.logout(currentUser.name);
     setCurrentUser(null);
-    setIsAdminInPlayerView(false); // Reseta a view do admin ao sair
+    setIsAdminInPlayerView(false);
   };
 
   const handleBuyCards = () => {
     if (!currentUser) return;
-    // Simula a compra apenas gerando as cartelas
     handleGenerateCards(cardQuantity);
     setCardQuantity(1);
   };
@@ -127,24 +140,24 @@ const App: React.FC = () => {
     if (quantity <= 0 || !currentUser) return;
     setIsGenerating(true); setError(null);
     try {
-      const existingCardSignatures = new Set(generatedCards.map(c => JSON.stringify([c.cardData.B, c.cardData.I, c.cardData.N, c.cardData.G, c.cardData.O].flat().filter(n => typeof n === 'number').sort())));
+      const existingCardSignatures = new Set(generatedCards.map(c => JSON.stringify([...c.cardData.B, ...c.cardData.I, ...c.cardData.N, ...c.cardData.G, ...c.cardData.O].filter(n => typeof n === 'number').sort())));
       const newCards: GeneratedCard[] = [];
       for (let i = 0; i < quantity; i++) {
         let newCardData: BingoCardData, signature: string, attempts = 0;
         do {
           newCardData = await generateBingoCard();
-          signature = JSON.stringify([newCardData.B, newCardData.I, newCardData.N, newCardData.G, newCardData.O].flat().filter(n => typeof n === 'number').sort());
+          signature = JSON.stringify([...newCardData.B, ...newCardData.I, ...newCardData.N, ...newCardData.G, ...newCardData.O].filter(n => typeof n === 'number').sort());
           if (++attempts > 100) throw new Error('Não foi possível gerar uma cartela única.');
         } while (existingCardSignatures.has(signature));
         existingCardSignatures.add(signature);
         newCards.push({ id: `card-${Date.now()}-${i}`, cardData: newCardData, owner: currentUser.name });
       }
-      setGeneratedCards(prev => [...prev, ...newCards]);
+      gameStateService.addCards(newCards);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : 'Falha ao gerar cartela.');
     } finally { setIsGenerating(false); }
-  }, [currentUser, generatedCards, setGeneratedCards]);
+  }, [currentUser, generatedCards]);
 
   const speak = useCallback((text: string, onEndCallback?: () => void) => {
     if (!('speechSynthesis' in window)) { onEndCallback?.(); return; }
@@ -152,19 +165,22 @@ const App: React.FC = () => {
     utterance.lang = 'pt-BR'; utterance.rate = 0.9; utterance.pitch = 1.1;
     utterance.volume = isMuted ? 0 : volume;
     utterance.onend = () => onEndCallback?.();
-    utterance.onerror = (e) => { console.error("Speech synthesis error", e); onEndCallback?.(); }
+    utterance.onerror = (e) => { 
+        console.error(`Speech synthesis error: ${e.error}`, e); 
+        onEndCallback?.(); 
+    }
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
   }, [isMuted, volume]);
   
   const handleToggleAutoMarking = () => {
     const newIsAutoMarking = !isAutoMarking;
-    if (isAutoMarking && !newIsAutoMarking) { // Trocando de auto para manual
+    if (isAutoMarking && !newIsAutoMarking) {
         const newManualMarks: Record<string, (number | string)[]> = {};
         const drawnNumbersSet = new Set(drawnNumbers);
         myCards.forEach(card => {
             const marksForCard: Set<number|string> = new Set(['LIVRE']);
-            [card.cardData.B, card.cardData.I, card.cardData.N, card.cardData.G, card.cardData.O].flat().forEach(num => {
+            [...card.cardData.B, ...card.cardData.I, ...card.cardData.N, ...card.cardData.G, ...card.cardData.O].forEach(num => {
                 if (drawnNumbersSet.has(num as number)) marksForCard.add(num);
             });
             newManualMarks[card.id] = Array.from(marksForCard);
@@ -183,59 +199,56 @@ const App: React.FC = () => {
     });
   };
 
-  const checkForBingo = useCallback((cards: GeneratedCard[], numbers: Set<number>, mode: GameMode, marks: Record<string, (number|string)[]>) => {
+  const checkForBingo = useCallback((cards: GeneratedCard[], numbers: Set<number>, mode: GameMode, allManualMarks: Record<string, (number|string)[]>) => {
     for (const card of cards) {
       const { B, I, N, G, O } = card.cardData;
-      const allNumbersOnCard = [B, I, N, G, O].flat().filter(n => typeof n === 'number') as number[];
-      const marksForCard = isAutoMarking ? numbers : new Set(marks[card.id] || []);
+      const allNumbersOnCard = [...B, ...I, ...N, ...G, ...O].filter(n => typeof n === 'number') as number[];
+      
+      // Determine whose marking mode to respect (the card owner's)
+      // For this simulation, we'll just use the current player's mode for checking their own bingo.
+      // A full implementation would need to know each player's marking mode.
+      const marksForCard = isAutoMarking ? numbers : new Set(allManualMarks[card.id] || []);
+
       const checkLine = (line: (number | string)[]) => line.every(num => num === 'LIVRE' || marksForCard.has(num as number));
       
       if (mode === 'full') {
         if (allNumbersOnCard.every(num => marksForCard.has(num))) return { cardId: card.id, playerName: card.owner };
       } else { // modo linha
         const columns = [B, I, N, G, O];
-        if (columns.some(checkLine)) return { cardId: card.id, playerName: card.owner };
-        const rows = B.map((_, colIndex) => columns.map(row => row[colIndex]));
-        if (rows.some(checkLine)) return { cardId: card.id, playerName: card.owner };
+        for(const col of columns) if(checkLine(col)) return { cardId: card.id, playerName: card.owner };
+        for (let i = 0; i < 5; i++) {
+            const row = columns.map(col => col[i]);
+            if (checkLine(row)) return { cardId: card.id, playerName: card.owner };
+        }
         const diag1 = [B[0], I[1], N[2], G[3], O[4]];
         const diag2 = [B[4], I[3], N[2], G[1], O[0]];
         if (checkLine(diag1) || checkLine(diag2)) return { cardId: card.id, playerName: card.owner };
       }
     }
     return null;
-  }, [isAutoMarking]);
+  }, [isAutoMarking]); // Depends on the current player's auto-marking status
     
-  const drawnNumbersRef = useRef(drawnNumbers);
-  const generatedCardsRef = useRef(generatedCards);
-  const gameModeRef = useRef(gameMode);
-  const manualMarksRef = useRef(manualMarks);
-  
-  useEffect(() => {
-    drawnNumbersRef.current = drawnNumbers;
-    generatedCardsRef.current = generatedCards;
-    gameModeRef.current = gameMode;
-    manualMarksRef.current = manualMarks;
-  }, [drawnNumbers, generatedCards, gameMode, manualMarks]);
-
   const handleDrawNumber = useCallback(() => {
-    const currentDrawn = drawnNumbersRef.current;
-    if (currentDrawn.length === 75) { setIsGameActive(false); return; }
+    const currentState = gameStateService.getState();
+    if (currentState.drawnNumbers.length === 75 || !currentState.isGameActive || currentState.bingoWinner) return;
 
     let newNumber;
-    do { newNumber = Math.floor(Math.random() * 75) + 1; } while (new Set(currentDrawn).has(newNumber));
+    do { newNumber = Math.floor(Math.random() * 75) + 1; } while (new Set(currentState.drawnNumbers).has(newNumber));
     
     const phrase = callerPhrases[Math.floor(Math.random() * callerPhrases.length)];
     const letter = getLetterForNumber(newNumber);
     
     speak(`${phrase} Letra ${letter}... ${newNumber}`, () => {
-        const updatedDrawnNumbers = [...drawnNumbersRef.current, newNumber];
-        setDrawnNumbers(updatedDrawnNumbers);
-        const winner = checkForBingo(generatedCardsRef.current, new Set(updatedDrawnNumbers), gameModeRef.current, manualMarksRef.current);
+        const latestState = gameStateService.getState();
+        gameStateService.addDrawnNumber(newNumber);
+        
+        const updatedDrawnNumbers = [...latestState.drawnNumbers, newNumber];
+        const winner = checkForBingo(latestState.generatedCards, new Set(updatedDrawnNumbers), latestState.gameMode, manualMarks);
         if(winner) {
-          if (!isAutoMarking) setMissedBingo(true);
-          setBingoWinner(winner);
-          setPlayerWins(prev => ({...prev, [winner.playerName]: (prev[winner.playerName] || 0) + 1}));
-          setIsGameActive(false);
+          // This check is local, so it only affects the person who might have missed it
+          if (!isAutoMarking) setMissedBingo(true); 
+          gameStateService.setWinner(winner);
+
           setShowConfetti(true);
           applauseRef.current?.play().catch(e => console.error("Erro ao tocar áudio:", e));
           cheeringRef.current?.play().catch(e => console.error("Erro ao tocar áudio:", e));
@@ -243,34 +256,33 @@ const App: React.FC = () => {
           setTimeout(() => speak(`BINGO! BINGO! BINGO! E o grande vencedor é... ${winnerName}! Parabéns!`), 500);
         }
     });
-  }, [setDrawnNumbers, checkForBingo, setBingoWinner, setIsGameActive, speak, setMissedBingo, isAutoMarking, setPlayerWins]);
+  }, [speak, checkForBingo, manualMarks, isAutoMarking, setMissedBingo]);
 
   const startPreGameCountdown = useCallback(() => {
     if (isGameActive || preGameCountdown !== null) return;
     const countdownStart = 10;
-    setPreGameCountdown(countdownStart);
+    gameStateService.setPreGameCountdown(countdownStart);
     speak(`Atenção, o bingo vai começar em ${countdownStart} segundos. Boa sorte!`);
   }, [isGameActive, preGameCountdown, speak]);
 
   const handleResetGame = () => {
-    setDrawnNumbers([]); setBingoWinner(null); setIsGameActive(false);
-    setPreGameCountdown(null); setShowConfetti(false); setManualMarks({}); setMissedBingo(false);
-    setGameStartingId(null); // Reseta o ID do jogo que estava para começar
+    gameStateService.resetGame();
+    setShowConfetti(false); setManualMarks({}); setMissedBingo(false);
     window.speechSynthesis.cancel();
     if(applauseRef.current) { applauseRef.current.currentTime = 0; applauseRef.current.pause(); }
     if(cheeringRef.current) { cheeringRef.current.currentTime = 0; cheeringRef.current.pause(); }
   }
 
-  // Efeito para o contador regressivo do próximo jogo agendado
+  // Countdown timer for next scheduled game
   useEffect(() => {
     if (isGameActive || !nextGame || bingoWinner || gameStartingId) return; 
     
     const timer = setInterval(() => {
       const distance = new Date(nextGame.startTime).getTime() - new Date().getTime();
-      if (distance <= 0) {
+      if (distance <= 1000) {
         setCountdown("O jogo vai começar!");
-        if (!bingoWinner) {
-            setGameStartingId(nextGame.id); // Trava o ID do jogo que vai começar
+        if (currentUser?.name === 'admin' && !bingoWinner) {
+            gameStateService.setGameStartingId(nextGame.id);
             startPreGameCountdown();
         }
         clearInterval(timer);
@@ -280,51 +292,42 @@ const App: React.FC = () => {
       const h = Math.floor((distance % 864e5) / 36e5);
       const m = Math.floor((distance % 36e5) / 6e4);
       const s = Math.floor((distance % 6e4) / 1000);
-      const parts = [];
-      if (d > 0) parts.push(`${d}d`);
-      if (h > 0) parts.push(`${h}h`);
-      parts.push(`${m}m`);
-      parts.push(`${s}s`);
-      setCountdown(parts.join(' '));
+      setCountdown([d > 0 && `${d}d`, h > 0 && `${h}h`, `${m}m`, `${s}s`].filter(Boolean).join(' '));
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isGameActive, bingoWinner, nextGame, startPreGameCountdown, gameStartingId]);
+  }, [isGameActive, bingoWinner, nextGame, startPreGameCountdown, gameStartingId, currentUser]);
 
-  // Efeito para a contagem regressiva de 10 segundos antes do jogo
+  // 10-second pre-game countdown
   useEffect(() => {
     if (preGameCountdown === null || isGameActive) return;
 
     if (preGameCountdown === 0) {
-      speak("Começou!");
-      setIsGameActive(true);
-      setPreGameCountdown(null);
-      // Remove o jogo que acabou de começar da agenda, usando o ID travado
-      if (gameStartingId) {
-        setScheduledGames(prev => prev.filter(g => g.id !== gameStartingId));
-        setGameStartingId(null); // Limpa o ID para o próximo
+      if (currentUser?.name === 'admin' && gameStartingId) {
+        speak("Começou!");
+        gameStateService.startGame(gameStartingId);
       }
       return;
     }
 
     const timer = setTimeout(() => {
       const newCountdown = preGameCountdown - 1;
-      setPreGameCountdown(newCountdown);
-      if (newCountdown > 0) speak(String(newCountdown));
+      if (currentUser?.name === 'admin') {
+         gameStateService.setPreGameCountdown(newCountdown);
+         if (newCountdown > 0) speak(String(newCountdown));
+      }
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [preGameCountdown, isGameActive, setIsGameActive, speak, gameStartingId, setScheduledGames]);
+  }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
 
-  const savedDrawCallback = useRef(handleDrawNumber);
-  useEffect(() => { savedDrawCallback.current = handleDrawNumber; }, [handleDrawNumber]);
-
+  // Main game draw loop (only runs for admin to be the "caller")
   useEffect(() => {
-    if (!isGameActive || bingoWinner) return;
-    const initialTimeout = setTimeout(() => savedDrawCallback.current(), 1000);
-    const timerId = setInterval(() => savedDrawCallback.current(), DRAW_INTERVAL_MS);
+    if (!isGameActive || bingoWinner || currentUser?.name !== 'admin') return;
+    const initialTimeout = setTimeout(() => handleDrawNumber(), 1000);
+    const timerId = setInterval(() => handleDrawNumber(), DRAW_INTERVAL_MS);
     return () => { clearTimeout(initialTimeout); clearInterval(timerId); };
-  }, [isGameActive, bingoWinner]);
+  }, [isGameActive, bingoWinner, currentUser, handleDrawNumber]);
 
   useEffect(() => {
     if (bingoWinner) {
@@ -333,15 +336,10 @@ const App: React.FC = () => {
     }
   }, [bingoWinner, myCards]);
 
-  if (!currentUser) return <Auth onLoginSuccess={setCurrentUser} users={users} setUsers={setUsers} />;
+  if (!currentUser) return <Auth onLoginSuccess={setCurrentUser} allUsers={users} />;
   
   if (currentUser.name === 'admin' && !isAdminInPlayerView) {
       return <AdminPanel 
-          gameMode={gameMode} 
-          onGameModeChange={setGameMode} 
-          scheduledGames={scheduledGames} 
-          onAddGame={(startTime) => setScheduledGames(prev => [...prev, { id: Date.now(), startTime }])} 
-          onRemoveGame={(id) => setScheduledGames(prev => prev.filter(g => g.id !== id))} 
           onSwitchToPlayerView={() => setIsAdminInPlayerView(true)}
           onLogout={handleLogout}
           onResetGame={handleResetGame}
@@ -351,35 +349,22 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-8 bg-[radial-gradient(circle_at_top_left,_rgba(31,_41,_55,_1),_transparent_30%),_radial-gradient(circle_at_bottom_right,_rgba(59,_130,_246,_0.3),_transparent_40%)]">
       {showConfetti && <Confetti />}
-      <audio ref={applauseRef} src="https://actions.google.com/sounds/v1/crowds/battle_crowd_cheer_and_applause.ogg" preload="auto"></audio>
-      <audio ref={cheeringRef} src="https://actions.google.com/sounds/v1/crowds/battle_crowd_celebrate_stern_clap.ogg" preload="auto"></audio>
+      <audio ref={applauseRef} src="https://cdn.pixabay.com/audio/2022/03/15/audio_2b22093512.mp3" preload="auto"></audio>
+      <audio ref={cheeringRef} src="https://cdn.pixabay.com/audio/2021/10/08/audio_7468f23af3.mp3" preload="auto"></audio>
       
       <div className="max-w-7xl mx-auto relative">
         <div className="absolute top-2 right-2 flex gap-2 z-20">
             {currentUser.name === 'admin' && (
-                 <button
-                    onClick={() => setIsAdminInPlayerView(false)}
-                    className="bg-purple-500/80 hover:bg-purple-600 text-white font-bold py-2 px-3 rounded-lg text-sm transition-colors flex items-center gap-2"
-                    aria-label="Voltar ao painel do administrador"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M10 9a4 4 0 100 8 4 4 0 000-8zm-2 9a9 9 0 005.464 2.949m5.464-2.949a9 9 0 01-10.928 0m10.928 0L14.536 14M4.536 14L2 11.464M3.515 9.015l2.525.505m11.92 0l2.525-.505M6.04 4.536L8.5 2m7.5 2.536L13.96 4.5M9.015 3.515l.505 2.525m5.95-.505l-.505 2.525" />
-                    </svg>
+                 <button onClick={() => setIsAdminInPlayerView(false)} className="bg-purple-500/80 hover:bg-purple-600 text-white font-bold py-2 px-3 rounded-lg text-sm transition-colors flex items-center gap-2" aria-label="Voltar ao painel do administrador" >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 9a4 4 0 100 8 4 4 0 000-8zm-2 9a9 9 0 005.464 2.949m5.464-2.949a9 9 0 01-10.928 0m10.928 0L14.536 14M4.536 14L2 11.464M3.515 9.015l2.525.505m11.92 0l2.525-.505M6.04 4.536L8.5 2m7.5 2.536L13.96 4.5M9.015 3.515l.505 2.525m5.95-.505l-.505 2.525" /></svg>
                     <span>Painel</span>
                 </button>
             )}
-            <button
-                onClick={handleLogout}
-                className="bg-red-500/80 hover:bg-red-600 text-white font-bold py-2 px-3 rounded-lg text-sm transition-colors flex items-center gap-2"
-                aria-label="Sair do sistema"
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                </svg>
+            <button onClick={handleLogout} className="bg-red-500/80 hover:bg-red-600 text-white font-bold py-2 px-3 rounded-lg text-sm transition-colors flex items-center gap-2" aria-label="Sair do sistema">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
                 <span>Sair</span>
             </button>
         </div>
-
 
         <header className="text-center mb-12">
           <div className="flex justify-center items-center gap-2 mb-4">
