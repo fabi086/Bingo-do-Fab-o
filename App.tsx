@@ -1,5 +1,7 @@
 
 
+
+
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { Prize, GeneratedCard, User, GameMode } from './types';
 import { generateBingoCard } from './services/geminiService';
@@ -113,7 +115,7 @@ const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: Game
 const App: React.FC = () => {
   // --- Shared State from Service ---
   const [gameState, setGameState] = useState(gameStateService.getState());
-  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId } = gameState;
+  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId, playerPreferences, bingoClaim } = gameState;
 
   // --- Local State (per-device/user) ---
   const [currentUser, setCurrentUser] = useLocalStorage<User | null>('bingoCurrentUser', null);
@@ -124,9 +126,7 @@ const App: React.FC = () => {
   const [showConfetti, setShowConfetti] = useState(false);
   const [isMuted, setIsMuted] = useLocalStorage('isMuted', false);
   const [volume, setVolume] = useLocalStorage('narratorVolume', 0.8);
-  const [isAutoMarking, setIsAutoMarking] = useLocalStorage('isAutoMarking', true);
   const [manualMarks, setManualMarks] = useLocalStorage<Record<string, (number|string)[]>>('manualMarks', {});
-  const [missedBingo, setMissedBingo] = useLocalStorage('missedBingo', false);
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [cardViewMode, setCardViewMode] = useLocalStorage<'carousel' | 'grid'>('cardViewMode', 'carousel');
   const [isAdminInPlayerView, setIsAdminInPlayerView] = useState(false);
@@ -147,6 +147,7 @@ const App: React.FC = () => {
   // --- Memos and Derived State ---
   const { playerWins } = gameState; // Destructure here to satisfy dependency arrays
   const myCards = useMemo(() => generatedCards.filter(c => c.owner === currentUser?.name), [generatedCards, currentUser]);
+  const isAutoMarking = useMemo(() => (playerPreferences[currentUser?.name ?? ''] ?? 'auto') === 'auto', [playerPreferences, currentUser]);
   const nextGame = useMemo(() => scheduledGames.filter(g => new Date(g.startTime).getTime() > Date.now()).sort((a,b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())[0] || null, [scheduledGames]);
   const allPlayers = useMemo(() => onlineUsers.map(u => u === 'admin' ? 'Fábio' : u).sort(), [onlineUsers]);
   const totalPrice = useMemo(() => (Math.floor(cardQuantity / 2) * prices.double) + (cardQuantity % 2 * prices.single), [cardQuantity]);
@@ -282,15 +283,27 @@ const App: React.FC = () => {
 
   }, [speechQueue, isSpeechBlocked, isMuted, volume, currentUser]);
 
-  // --- Reactive Winner Check: Admin checks for winner when numbers change ---
+  // --- Reactive Winner Check (for Auto-Marking players): Admin checks for winner when numbers change ---
   useEffect(() => {
     if (currentUser?.name !== 'admin' || !isGameActive || bingoWinner || drawnNumbers.length < 5) return;
     
-    const winner = checkForWinner(generatedCards, new Set(drawnNumbers), gameMode);
+    // Only check for winners among players using auto-marking
+    const autoMarkingPlayers = new Set(Object.keys(playerPreferences).filter(p => playerPreferences[p] === 'auto'));
+    // Include players who haven't set a preference yet (defaults to auto)
+    const allPlayerNames = new Set(generatedCards.map(c => c.owner));
+    allPlayerNames.forEach(name => {
+        if(playerPreferences[name] === undefined) {
+            autoMarkingPlayers.add(name);
+        }
+    });
+
+    const cardsToCheck = generatedCards.filter(card => autoMarkingPlayers.has(card.owner));
+
+    const winner = checkForWinner(cardsToCheck, new Set(drawnNumbers), gameMode);
     if (winner) {
       gameStateService.setWinner(winner);
     }
-  }, [drawnNumbers, isGameActive, bingoWinner, currentUser, gameMode, generatedCards]);
+  }, [drawnNumbers, isGameActive, bingoWinner, currentUser, gameMode, generatedCards, playerPreferences]);
   
   // --- Reactive Winner Celebration: Trigger effects when a winner is declared ---
   useEffect(() => {
@@ -308,14 +321,9 @@ const App: React.FC = () => {
             speak(`BINGOOOOO! TEMOS UM VENCEDOR! Parabéns para ${winnerName}! Que sorte!`);
           }
           speakWinner();
-
-
-          if (myCards.some(c => c.id === bingoWinner.cardId) && !isAutoMarking) {
-            setMissedBingo(true);
-          }
       }
       prevBingoWinnerRef.current = bingoWinner;
-  }, [bingoWinner, speak, myCards, isAutoMarking, setMissedBingo]);
+  }, [bingoWinner, speak]);
   
   // Countdown timer for next scheduled game
   useEffect(() => {
@@ -438,7 +446,7 @@ const App: React.FC = () => {
 
   const handleResetGame = () => {
     gameStateService.resetGame();
-    setShowConfetti(false); setManualMarks({}); setMissedBingo(false);
+    setShowConfetti(false); setManualMarks({});
     setSpeechQueue([]);
     setNarratedNumbers([]);
     setCurrentlySpeaking(null);
@@ -448,8 +456,10 @@ const App: React.FC = () => {
   }
 
   const handleToggleAutoMarking = () => {
-    const newIsAutoMarking = !isAutoMarking;
-    if (newIsAutoMarking === false) { // Switched TO manual
+    if (!currentUser) return;
+    const newPreference = isAutoMarking ? 'manual' : 'auto';
+
+    if (newPreference === 'manual') { // Switched TO manual
         const newManualMarks: Record<string, (number | string)[]> = {};
         const narratedNumbersSet = new Set(narratedNumbers);
         myCards.forEach(card => {
@@ -461,7 +471,7 @@ const App: React.FC = () => {
         });
         setManualMarks(prev => ({ ...prev, ...newManualMarks }));
     }
-    setIsAutoMarking(newIsAutoMarking);
+    gameStateService.setPlayerPreference(currentUser.name, newPreference);
   };
 
   const handleCellClick = (cardId: string, num: number | string) => {
@@ -472,6 +482,20 @@ const App: React.FC = () => {
         return { ...prev, [cardId]: Array.from(existingMarks) };
     });
   };
+
+  const handleClaimBingo = () => {
+    if (!currentUser || myCards.length === 0 || bingoWinner || bingoClaim) return;
+    const currentCard = myCards[currentCardIndex];
+    if (currentCard) {
+        speak("Verificando seu BINGO!");
+        gameStateService.claimBingo(currentUser.name, currentCard.id);
+        // If the admin is the one claiming bingo, switch them back to the admin panel to verify.
+        if (currentUser.name === 'admin') {
+            setIsAdminInPlayerView(false);
+        }
+    }
+  };
+
 
   useEffect(() => {
     if (bingoWinner) {
@@ -561,11 +585,6 @@ const App: React.FC = () => {
                         <p className="text-xl text-green-200 mt-2">Vencedor: {bingoWinner.playerName === 'admin' ? 'Fábio' : bingoWinner.playerName}!</p>
                      </div>
                  )}
-                 {bingoWinner && !isAutoMarking && missedBingo && (
-                    <div className="mt-4 text-center bg-yellow-500/20 border-2 border-yellow-400 p-4 rounded-xl">
-                        <p className="font-bold text-yellow-200">Aviso!</p><p className="text-yellow-300 text-sm">O sistema detectou um BINGO! Como você estava no modo manual, o jogo foi encerrado. Verifique sua cartela.</p>
-                    </div>
-                 )}
             </div>
 
             {myCards.length === 0 && !isGameActive && (
@@ -587,7 +606,7 @@ const App: React.FC = () => {
             )}
             
             {myCards.length > 0 && (
-              <div>
+              <div className="relative">
                 <div className="flex flex-wrap justify-between items-center mb-4 gap-4">
                   <h2 className="text-3xl font-bold text-white">Minhas Cartelas ({currentUser.name === 'admin' ? 'Fábio' : currentUser.name})</h2>
                   <div className="flex items-center gap-4">
@@ -609,6 +628,18 @@ const App: React.FC = () => {
                     </div>
                 ) : (
                     <div className="space-y-6 max-w-md mx-auto">{myCards.map((card, index) => (<div key={card.id}><h3 className="text-center font-bold text-lg text-gray-300 mb-2">Cartela {index + 1}</h3><div className={`${bingoWinner?.cardId === card.id ? 'ring-4 ring-sky-400 animate-pulse' : ''} rounded-lg`}><BingoCard cardData={card.cardData} drawnNumbers={new Set(narratedNumbers)} isAutoMarking={isAutoMarking} manualMarks={new Set(manualMarks[card.id] || ['LIVRE'])} onCellClick={(num) => handleCellClick(card.id, num)} /></div></div>))}</div>
+                )}
+                {!isAutoMarking && isGameActive && !bingoWinner && (
+                    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg p-4 z-30">
+                         <button 
+                            onClick={handleClaimBingo}
+                            disabled={!!bingoClaim}
+                            className="w-full text-center text-5xl font-black text-white bg-gradient-to-r from-green-400 to-teal-500 rounded-lg shadow-2xl py-4 transform transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed animate-pulse"
+                         >
+                            BINGO!
+                         </button>
+                         {bingoClaim && bingoClaim.playerName === currentUser.name && <p className="text-center text-yellow-300 mt-2 font-semibold">Sua reivindicação de BINGO está sendo verificada!</p>}
+                    </div>
                 )}
               </div>
             )}

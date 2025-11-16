@@ -20,6 +20,8 @@ class GameStateService {
     scheduledGames: [],
     preGameCountdown: null,
     gameStartingId: null,
+    playerPreferences: {},
+    bingoClaim: null,
   };
 
   constructor() {
@@ -99,6 +101,8 @@ class GameStateService {
         generatedCards: [],
         onlineUsers: [],
         playerWins: {},
+        playerPreferences: {},
+        bingoClaim: null,
     });
   }
 
@@ -151,11 +155,31 @@ class GameStateService {
       this.updateState({
           bingoWinner: winner,
           isGameActive: false,
+          bingoClaim: null,
           playerWins: {
               ...this.state.playerWins,
               [winner.playerName]: (this.state.playerWins[winner.playerName] || 0) + 1,
           }
       });
+  }
+  
+  setPlayerPreference(playerName: string, preference: 'auto' | 'manual'): void {
+    this.updateState({
+        playerPreferences: {
+            ...this.state.playerPreferences,
+            [playerName]: preference,
+        }
+    });
+  }
+
+  claimBingo(playerName: string, cardId: string): void {
+    // Prevent multiple claims or claims after game ends
+    if (this.state.bingoClaim || this.state.bingoWinner) return;
+    this.updateState({ bingoClaim: { playerName, cardId } });
+  }
+
+  clearBingoClaim(): void {
+    this.updateState({ bingoClaim: null });
   }
 
   // --- Private methods ---
