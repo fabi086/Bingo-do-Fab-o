@@ -68,7 +68,10 @@ class GameStateService {
     } else {
       // No state found, so create it
       this.state = { ...this.initialState };
-      await this.updateState(this.state, true); // Force full state update
+       const { error: upsertError } = await supabase
+        .from(TABLE_NAME)
+        .upsert({ id: ROW_ID, state: this.state });
+       if (upsertError) console.error('Failed to create initial state:', upsertError);
     }
 
     this.notifyListeners();
@@ -96,45 +99,59 @@ class GameStateService {
   // --- Actions ---
 
   async registerUser(newUser: User): Promise<boolean> {
-    if (this.state.users.some(u => u.name === newUser.name)) {
-        return false;
-    }
-    await this.updateState({ users: [...this.state.users, newUser] });
-    return true;
+    let success = false;
+    await this.fetchAndApplyUpdate(current => {
+        if (current.users.some(u => u.name === newUser.name)) {
+            success = false;
+            return null; // No update
+        }
+        success = true;
+        return { users: [...current.users, newUser] };
+    });
+    return success;
   }
   
   async login(name: string): Promise<void> {
-     if (!this.state.onlineUsers.includes(name)) {
-        await this.updateState({ onlineUsers: [...this.state.onlineUsers, name] });
-    }
+     await this.fetchAndApplyUpdate(current => {
+        if (!current.onlineUsers.includes(name)) {
+            return { onlineUsers: [...current.onlineUsers, name] };
+        }
+        return null; // No update needed
+    });
   }
 
   async logout(name: string): Promise<void> {
-    await this.updateState({ onlineUsers: this.state.onlineUsers.filter(u => u !== name) });
+    await this.fetchAndApplyUpdate(current => {
+        if (current.onlineUsers.includes(name)) {
+            return { onlineUsers: current.onlineUsers.filter(u => u !== name) };
+        }
+        return null;
+    });
   }
 
   async addCards(newCards: GeneratedCard[]): Promise<void> {
-    await this.updateState({ generatedCards: [...this.state.generatedCards, ...newCards] });
+    await this.fetchAndApplyUpdate(current => ({ 
+        generatedCards: [...current.generatedCards, ...newCards] 
+    }));
   }
 
   async setGameMode(mode: GameMode): Promise<void> {
-    await this.updateState({ gameMode: mode });
+    await this.fetchAndApplyUpdate(() => ({ gameMode: mode }));
   }
 
   async setPreGameCountdown(countdown: number | null): Promise<void> {
-    await this.updateState({ preGameCountdown: countdown });
+    await this.fetchAndApplyUpdate(() => ({ preGameCountdown: countdown }));
   }
   
   async startGame(): Promise<void> {
-      await this.updateState({
+      await this.fetchAndApplyUpdate(() => ({
           isGameActive: true,
           preGameCountdown: null,
-      });
+      }));
   }
 
   async startNextGameCycle(): Promise<void> {
-    // Resets the game and starts a countdown for the next one.
-    await this.updateState({
+    await this.fetchAndApplyUpdate(() => ({
         drawnNumbers: [],
         bingoWinner: null,
         isGameActive: false,
@@ -143,74 +160,93 @@ class GameStateService {
         playerPreferences: {},
         invalidBingoClaim: null,
         lastReaction: null,
-    });
+    }));
   }
 
   async drawNextNumber(): Promise<void> {
-    const { drawnNumbers, isGameActive, bingoWinner } = this.state;
-    if (drawnNumbers.length >= 75 || !isGameActive || bingoWinner) {
-      return;
-    }
+    await this.fetchAndApplyUpdate(current => {
+        const { drawnNumbers, isGameActive, bingoWinner } = current;
+        if (drawnNumbers.length >= 75 || !isGameActive || bingoWinner) {
+          return null;
+        }
 
-    let newNumber;
-    const drawnSet = new Set(drawnNumbers);
-    do {
-      newNumber = Math.floor(Math.random() * 75) + 1;
-    } while (drawnSet.has(newNumber));
+        let newNumber;
+        const drawnSet = new Set(drawnNumbers);
+        do {
+          newNumber = Math.floor(Math.random() * 75) + 1;
+        } while (drawnSet.has(newNumber));
 
-    await this.updateState({ drawnNumbers: [...drawnNumbers, newNumber], invalidBingoClaim: null });
+        return { drawnNumbers: [...drawnNumbers, newNumber], invalidBingoClaim: null };
+    });
   }
 
   async setWinner(winner: { cardId: string; playerName: string }): Promise<void> {
-      await this.updateState({
+      await this.fetchAndApplyUpdate(current => ({
           bingoWinner: winner,
           isGameActive: false,
           invalidBingoClaim: null,
           playerWins: {
-              ...this.state.playerWins,
-              [winner.playerName]: (this.state.playerWins[winner.playerName] || 0) + 1,
+              ...current.playerWins,
+              [winner.playerName]: (current.playerWins[winner.playerName] || 0) + 1,
           }
-      });
+      }));
   }
   
   async setPlayerPreference(playerName: string, preference: 'auto' | 'manual'): Promise<void> {
-    await this.updateState({
+    await this.fetchAndApplyUpdate(current => ({
         playerPreferences: {
-            ...this.state.playerPreferences,
+            ...current.playerPreferences,
             [playerName]: preference,
         }
-    });
+    }));
   }
 
   async claimBingo(playerName: string, cardId: string, drawnNumbers: Set<number>, gameMode: GameMode): Promise<void> {
-    if (this.state.bingoWinner || this.state.invalidBingoClaim?.playerName === playerName) return;
-
-    const claimedCard = this.state.generatedCards.find(c => c.id === cardId && c.owner === playerName);
-    if (!claimedCard) return;
-
-    const isWinner = checkForWinner([claimedCard], drawnNumbers, gameMode);
-
-    if (isWinner) {
-        await this.setWinner({ cardId, playerName });
-    } else {
-        await this.updateState({ invalidBingoClaim: { playerName, timestamp: Date.now() } });
+    let isInvalid = false;
+    await this.fetchAndApplyUpdate(current => {
+        if (current.bingoWinner || current.invalidBingoClaim?.playerName === playerName) return null;
         
-        setTimeout(async () => {
-            // Check if the claim is still the same one before clearing
-            const currentState = this.getState();
-            if (currentState.invalidBingoClaim?.playerName === playerName) {
-                await this.clearInvalidBingoClaim();
-            }
+        const claimedCard = current.generatedCards.find(c => c.id === cardId && c.owner === playerName);
+        if (!claimedCard) return null;
+        
+        const isWinner = checkForWinner([claimedCard], drawnNumbers, gameMode);
+        
+        if (isWinner) {
+            return {
+                bingoWinner: { cardId, playerName },
+                isGameActive: false,
+                invalidBingoClaim: null,
+                playerWins: {
+                    ...current.playerWins,
+                    [playerName]: (current.playerWins[playerName] || 0) + 1,
+                }
+            };
+        } else {
+            isInvalid = true;
+            return { invalidBingoClaim: { playerName, timestamp: Date.now() } };
+        }
+    });
+
+    if (isInvalid) {
+        setTimeout(() => {
+            this.clearInvalidBingoClaim(playerName);
         }, 5000);
     }
   }
   
-  async clearInvalidBingoClaim(): Promise<void> {
-    await this.updateState({ invalidBingoClaim: null });
+  async clearInvalidBingoClaim(playerName: string): Promise<void> {
+    await this.fetchAndApplyUpdate(current => {
+        if (current.invalidBingoClaim?.playerName === playerName) {
+            return { invalidBingoClaim: null };
+        }
+        return null;
+    });
   }
 
   async triggerReaction(type: Reaction['type']): Promise<void> {
-    await this.updateState({ lastReaction: { type, timestamp: Date.now() } });
+    await this.fetchAndApplyUpdate(current => ({ 
+        lastReaction: { type, timestamp: Date.now() } 
+    }));
   }
 
 
@@ -225,8 +261,9 @@ class GameStateService {
             { event: 'UPDATE', schema: 'public', table: TABLE_NAME, filter: `id=eq.${ROW_ID}` },
             (payload) => {
                 const newState = (payload.new as { state: SharedGameState }).state;
+                // Only update if the state has genuinely changed to avoid re-renders.
                 if (JSON.stringify(this.state) !== JSON.stringify(newState)) {
-                    this.state = newState;
+                    this.state = { ...this.initialState, ...newState };
                     this.notifyListeners();
                 }
             }
@@ -245,21 +282,41 @@ class GameStateService {
     this.listeners.forEach(callback => callback(this.state));
   }
   
-  private async updateState(newState: Partial<SharedGameState>, isFullState = false): Promise<void> {
-    const updatedState = isFullState ? (newState as SharedGameState) : { ...this.state, ...newState };
-    this.state = updatedState;
-    
-    const { error } = await supabase
+  private async fetchAndApplyUpdate(
+    updateFn: (currentState: SharedGameState) => Partial<SharedGameState> | null
+  ): Promise<void> {
+    const { data, error: fetchError } = await supabase
         .from(TABLE_NAME)
-        .upsert({ id: ROW_ID, state: updatedState });
+        .select('state')
+        .eq('id', ROW_ID)
+        .single();
 
-    if (error) {
-      console.error('Failed to save state to Supabase:', error);
+    if (fetchError && fetchError.code !== 'PGRST116') {
+        console.error('Failed to fetch state before update:', fetchError);
+        return; // Early exit on fetch failure
     }
 
-    // Notify local listeners immediately for better responsiveness.
-    // Other clients will be notified by the real-time subscription.
-    this.notifyListeners();
+    const currentState = data?.state ? { ...this.initialState, ...data.state } : { ...this.initialState };
+
+    const updates = updateFn(currentState);
+
+    if (updates === null) {
+        return; // No update needed
+    }
+
+    const newState = { ...currentState, ...updates };
+
+    const { error: upsertError } = await supabase
+        .from(TABLE_NAME)
+        .upsert({ id: ROW_ID, state: newState });
+
+    if (upsertError) {
+        console.error('Failed to save atomic state update to Supabase:', upsertError);
+    }
+    
+    // We don't update local state or notify listeners here.
+    // The realtime subscription is the single source of truth and will trigger the update.
+    // This prevents race conditions and ensures all clients are in sync.
   }
 }
 
