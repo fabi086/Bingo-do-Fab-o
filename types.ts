@@ -30,11 +30,6 @@ export interface PlayerWin {
 
 export type GameMode = 'line' | 'full';
 
-export interface ScheduledGame {
-  id: number;
-  startTime: string; // ISO string format
-}
-
 export interface PlayerPreferences {
   [playerName: string]: 'auto' | 'manual';
 }
@@ -53,9 +48,7 @@ export interface SharedGameState {
   bingoWinner: { cardId: string; playerName: string } | null;
   playerWins: PlayerWin;
   gameMode: GameMode;
-  scheduledGames: ScheduledGame[];
   preGameCountdown: number | null;
-  gameStartingId: number | null;
   playerPreferences: PlayerPreferences;
   invalidBingoClaim: { playerName: string; timestamp: number } | null;
   lastReaction: Reaction | null;

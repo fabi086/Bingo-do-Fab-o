@@ -1,4 +1,4 @@
-import type { User, SharedGameState, GeneratedCard, GameMode, ScheduledGame, Reaction } from '../types';
+import type { User, SharedGameState, GeneratedCard, GameMode, Reaction } from '../types';
 import { supabase } from './supabaseClient';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
@@ -42,9 +42,7 @@ class GameStateService {
     bingoWinner: null,
     playerWins: {},
     gameMode: 'line',
-    scheduledGames: [],
     preGameCountdown: null,
-    gameStartingId: null,
     playerPreferences: {},
     invalidBingoClaim: null,
     lastReaction: null,
@@ -119,60 +117,32 @@ class GameStateService {
     await this.updateState({ generatedCards: [...this.state.generatedCards, ...newCards] });
   }
 
-  async resetGame(): Promise<void> {
-    await this.updateState({
-        drawnNumbers: [],
-        bingoWinner: null,
-        isGameActive: false,
-        preGameCountdown: null,
-        gameStartingId: null,
-        generatedCards: [],
-        onlineUsers: this.state.onlineUsers, // Keep users online
-        playerWins: {},
-        playerPreferences: {},
-        invalidBingoClaim: null,
-        lastReaction: null,
-    });
-  }
-
   async setGameMode(mode: GameMode): Promise<void> {
     await this.updateState({ gameMode: mode });
-  }
-
-  async addGame(startTime: string): Promise<void> {
-     const newGame: ScheduledGame = { id: Date.now(), startTime };
-     await this.updateState({ scheduledGames: [...this.state.scheduledGames, newGame] });
-  }
-
-  async removeGame(gameId: number): Promise<void> {
-    await this.updateState({ scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId) });
-  }
-  
-  async setGameStartingId(id: number | null): Promise<void> {
-    await this.updateState({ gameStartingId: id });
   }
 
   async setPreGameCountdown(countdown: number | null): Promise<void> {
     await this.updateState({ preGameCountdown: countdown });
   }
   
-  async startGame(gameId: number): Promise<void> {
+  async startGame(): Promise<void> {
       await this.updateState({
           isGameActive: true,
           preGameCountdown: null,
-          scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId),
-          gameStartingId: null,
       });
   }
 
-  async startInstantGame(): Promise<void> {
-    const gameId = Date.now();
-    const startTime = new Date(Date.now() + 10000).toISOString();
-    const newGame: ScheduledGame = { id: gameId, startTime };
+  async startNextGameCycle(): Promise<void> {
+    // Resets the game and starts a countdown for the next one.
     await this.updateState({
-        scheduledGames: [...this.state.scheduledGames, newGame],
-        gameStartingId: gameId,
-        preGameCountdown: 10,
+        drawnNumbers: [],
+        bingoWinner: null,
+        isGameActive: false,
+        preGameCountdown: 20, // Start a 20-second countdown
+        generatedCards: [],
+        playerPreferences: {},
+        invalidBingoClaim: null,
+        lastReaction: null,
     });
   }
 
@@ -226,7 +196,9 @@ class GameStateService {
         await this.updateState({ invalidBingoClaim: { playerName, timestamp: Date.now() } });
         
         setTimeout(async () => {
-            if (this.state.invalidBingoClaim?.playerName === playerName) {
+            // Check if the claim is still the same one before clearing
+            const currentState = this.getState();
+            if (currentState.invalidBingoClaim?.playerName === playerName) {
                 await this.clearInvalidBingoClaim();
             }
         }, 5000);

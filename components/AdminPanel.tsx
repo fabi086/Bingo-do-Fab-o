@@ -1,18 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import type { GameMode, ScheduledGame } from '../types';
+import type { GameMode } from '../types';
 import { gameStateService } from '../services/gameState';
 import InfoCard from './InfoCard';
 
 interface AdminPanelProps {
   onSwitchToPlayerView: () => void;
-  onLogout: () => void;
-  onResetGame: () => void;
 }
 
-const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout, onResetGame }) => {
+const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView }) => {
   const [gameState, setGameState] = useState(gameStateService.getState());
-  const { gameMode, scheduledGames } = gameState;
-  const [newGameTime, setNewGameTime] = useState('');
+  const { gameMode } = gameState;
 
   useEffect(() => {
     const unsubscribe = gameStateService.subscribe(setGameState);
@@ -20,16 +17,15 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
         if (unsubscribe) unsubscribe();
     };
   }, []);
-  
-  const handleAddGame = async () => {
-    if (newGameTime) {
-      await gameStateService.addGame(new Date(newGameTime).toISOString());
-      setNewGameTime('');
+
+  const handleLogout = () => {
+    const currentUser = gameStateService.getState().users.find(u => u.name === 'admin');
+    if (currentUser) {
+        gameStateService.logout(currentUser.name);
     }
+    // Note: The actual logout (clearing local storage) happens in the App component
   };
   
-  const sortedGames = [...scheduledGames].sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
-
   return (
     <div className="min-h-screen bg-slate-900 text-white p-4 sm:p-8 flex items-center justify-center">
       <div className="w-full max-w-2xl space-y-8 relative">
@@ -42,7 +38,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
                 Ver Jogo
             </button>
             <button
-                onClick={onLogout}
+                onClick={handleLogout}
                 className="bg-red-500/80 hover:bg-red-600 text-white font-bold py-2 px-3 rounded-lg text-sm transition-colors flex items-center gap-2"
                 aria-label="Sair do sistema"
             >
@@ -79,56 +75,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
           </div>
         </InfoCard>
 
-        <InfoCard icon="🗓️" title="Agendar Jogos">
-          <div className="space-y-4">
-            <div>
-              <label htmlFor="game-time" className="block text-sm font-medium text-gray-300 mb-2">
-                Data e Hora do Novo Jogo:
-              </label>
-              <input
-                id="game-time"
-                type="datetime-local"
-                value={newGameTime}
-                onChange={(e) => setNewGameTime(e.target.value)}
-                className="w-full bg-gray-700 text-white px-3 py-2 rounded-md border border-gray-600 focus:ring-2 focus:ring-sky-400 focus:outline-none"
-              />
-            </div>
-            <button
-              onClick={handleAddGame}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-            >
-              Agendar Novo Jogo
-            </button>
-             <button
-              onClick={async () => await gameStateService.startInstantGame()}
-              className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-            >
-              Jogo Instantâneo (inicia em 10s)
-            </button>
-          </div>
-          <div className="mt-6">
-            <h3 className="text-lg font-semibold mb-2">Jogos Agendados:</h3>
-            <ul className="space-y-2 max-h-60 overflow-y-auto">
-              {sortedGames.length > 0 ? sortedGames.map(game => (
-                <li key={game.id} className="flex justify-between items-center bg-black/20 p-2 rounded-md">
-                  <span className="font-medium">
-                    {new Date(game.startTime).toLocaleString('pt-BR')}
-                  </span>
-                  <button onClick={async () => await gameStateService.removeGame(game.id)} className="text-red-400 hover:text-red-600 font-bold text-sm">
-                    Remover
-                  </button>
-                </li>
-              )) : <p className="text-gray-400">Nenhum jogo agendado.</p>}
-            </ul>
-          </div>
-        </InfoCard>
-
         <InfoCard icon="🕹️" title="Controles da Sala">
             <button
-                onClick={onResetGame}
-                className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+                onClick={async () => await gameStateService.startNextGameCycle()}
+                className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
             >
-                Reiniciar Jogo Atual
+                Iniciar Novo Jogo
             </button>
         </InfoCard>
       </div>

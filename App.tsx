@@ -108,14 +108,13 @@ const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: Game
 const App: React.FC = () => {
   // --- Shared State from Service ---
   const [gameState, setGameState] = useState(gameStateService.getState());
-  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId, playerPreferences, invalidBingoClaim, lastReaction } = gameState;
+  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, preGameCountdown, playerPreferences, invalidBingoClaim, lastReaction } = gameState;
 
   // --- Local State (per-device/user) ---
   const [currentUser, setCurrentUser] = useLocalStorage<User | null>('bingoCurrentUser', null);
   const [cardQuantity, setCardQuantity] = useState(1);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState('');
   const [showConfetti, setShowConfetti] = useState(false);
   const [isMuted, setIsMuted] = useLocalStorage('isMuted', false);
   const [volume, setVolume] = useLocalStorage('narratorVolume', 0.8);
@@ -139,15 +138,15 @@ const App: React.FC = () => {
   const prevBingoWinnerRef = useRef(bingoWinner);
   const lastUtteranceRef = useRef<string | null>(null);
   const isNarratingRef = useRef(false);
+  const drawnNumbersOnLoadRef = useRef<number[] | null>(null);
   
   // --- Memos and Derived State ---
   const { playerWins } = gameState; // Destructure here to satisfy dependency arrays
   const myCards = useMemo(() => generatedCards.filter(c => c.owner === currentUser?.name), [generatedCards, currentUser]);
   const isAutoMarking = useMemo(() => (playerPreferences[currentUser?.name ?? ''] ?? 'auto') === 'auto', [playerPreferences, currentUser]);
-  const nextGame = useMemo(() => scheduledGames.filter(g => new Date(g.startTime).getTime() > Date.now()).sort((a,b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())[0] || null, [scheduledGames]);
   const allPlayers = useMemo(() => {
     const players = new Set(onlineUsers.map(u => u === 'admin' ? 'Fábio' : u));
-    if (currentUser?.name === 'admin') {
+    if (currentUser?.name === 'admin' && onlineUsers.includes('admin')) {
       players.add('Fábio');
     }
     return Array.from(players).sort();
@@ -164,9 +163,8 @@ const App: React.FC = () => {
         await gameStateService.initialize();
         setIsLoading(false);
         const unsubscribe = gameStateService.subscribe(setGameState);
-        // On initial load, sync the narrated numbers with the drawn numbers
-        // so if a user joins mid-game, their card is correctly marked up to that point.
-        setNarratedNumbers(gameStateService.getState().drawnNumbers);
+        // Store the drawn numbers on initial load to avoid re-marking already marked cards.
+        drawnNumbersOnLoadRef.current = gameStateService.getState().drawnNumbers;
         return unsubscribe;
     }
     const unsubPromise = initialize();
@@ -176,6 +174,24 @@ const App: React.FC = () => {
         gameStateService.cleanup();
     };
   }, []);
+  
+  // *** BUG FIX ***: Effect to reset local state when a new game starts.
+  // A new game is identified by the `drawnNumbers` array being reset.
+  const prevDrawnNumbersLengthRef = useRef(drawnNumbers.length);
+  useEffect(() => {
+    if (prevDrawnNumbersLengthRef.current > 0 && drawnNumbers.length === 0) {
+        console.log("New game detected. Resetting local state.");
+        setManualMarks({});
+        setNarratedNumbers([]);
+        setSpeechQueue([]);
+        setCurrentlySpeaking(null);
+        setShowConfetti(false);
+        if (applauseRef.current) { applauseRef.current.currentTime = 0; applauseRef.current.pause(); }
+        if (cheeringRef.current) { cheeringRef.current.currentTime = 0; cheeringRef.current.pause(); }
+    }
+    prevDrawnNumbersLengthRef.current = drawnNumbers.length;
+  }, [drawnNumbers]);
+
 
   // Handle user login/logout for online status
   useEffect(() => {
@@ -230,12 +246,19 @@ const App: React.FC = () => {
 
   // --- Reactive Narration: Populates a speech queue to handle numbers correctly ---
   useEffect(() => {
-    const newNumbers = drawnNumbers.filter(num => !prevDrawnNumbersRef.current.includes(num));
+    // On first load, sync narrated numbers to avoid re-narrating the whole game.
+    if (drawnNumbersOnLoadRef.current) {
+        setNarratedNumbers(drawnNumbersOnLoadRef.current);
+        drawnNumbersOnLoadRef.current = null; // Only run once
+        return;
+    }
+
+    const newNumbers = drawnNumbers.filter(num => !narratedNumbers.includes(num));
     if (newNumbers.length > 0 && isGameActive && !bingoWinner) {
         setSpeechQueue(prevQueue => [...prevQueue, ...newNumbers]);
     }
     prevDrawnNumbersRef.current = drawnNumbers;
-  }, [drawnNumbers, isGameActive, bingoWinner]);
+  }, [drawnNumbers, isGameActive, bingoWinner, narratedNumbers]);
   
   // --- Number Narration Queue Processor ---
   useEffect(() => {
@@ -341,37 +364,25 @@ const App: React.FC = () => {
           const speakWinner = async () => {
             await new Promise(resolve => setTimeout(resolve, 250)); 
             await speak(`BINGOOOOO! TEMOS UM VENCEDOR! Parabéns para ${winnerName}! Que sorte!`);
-            setTimeout(() => {
-                if (!gameStateService.getState().isGameActive) {
-                    speak('Atenção. Em breve um novo jogo começará!');
-                }
-            }, 3000);
           }
           speakWinner();
       }
       prevBingoWinnerRef.current = bingoWinner;
   }, [bingoWinner, speak]);
   
-  // Countdown timer for next scheduled game
+  // --- Continuous Game Cycle (Admin client is responsible) ---
   useEffect(() => {
-    if (isGameActive || !nextGame || bingoWinner || gameStartingId) return; 
-    const timer = setInterval(async () => {
-      const distance = new Date(nextGame.startTime).getTime() - Date.now();
-      if (distance <= 1000) {
-        setCountdown("O jogo vai começar!");
-        if (currentUser?.name === 'admin') {
-            await gameStateService.setGameStartingId(nextGame.id);
-            await speak(`Atenção, o bingo vai começar em 10 segundos. Boa sorte!`);
-            await gameStateService.setPreGameCountdown(10);
-        }
-        clearInterval(timer);
-        return;
-      }
-      const d = Math.floor(distance / 864e5), h = Math.floor((distance % 864e5) / 36e5), m = Math.floor((distance % 36e5) / 6e4), s = Math.floor((distance % 6e4) / 1000);
-      setCountdown([d > 0 && `${d}d`, h > 0 && `${h}h`, `${m}m`, `${s}s`].filter(Boolean).join(' '));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [isGameActive, bingoWinner, nextGame, gameStartingId, currentUser, speak]);
+    if (currentUser?.name === 'admin' && bingoWinner && !isGameActive) {
+        const timer = setTimeout(async () => {
+            const currentState = gameStateService.getState();
+            // Check if a winner is still set, to prevent race conditions if another admin resets.
+            if (currentState.bingoWinner) {
+                 await gameStateService.startNextGameCycle();
+            }
+        }, 15000); // 15-second celebration time
+        return () => clearTimeout(timer);
+    }
+  }, [bingoWinner, isGameActive, currentUser]);
 
   // 10-second pre-game countdown (driven by admin client)
   useEffect(() => {
@@ -379,15 +390,13 @@ const App: React.FC = () => {
   
     const countdownLogic = async () => {
         if (preGameCountdown === 0) {
-          if (gameStartingId) {
               await speak("Começou!");
-              await gameStateService.startGame(gameStartingId);
+              await gameStateService.startGame();
               setTimeout(async () => {
                 if (gameStateService.getState().isGameActive) {
                   await gameStateService.drawNextNumber();
                 }
               }, 1500);
-          }
           return;
         }
       
@@ -402,7 +411,7 @@ const App: React.FC = () => {
         return () => clearTimeout(timer);
     }
     countdownLogic();
-  }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
+  }, [preGameCountdown, isGameActive, speak, currentUser]);
 
   // Player Reactions Handler
   useEffect(() => {
@@ -489,17 +498,6 @@ const App: React.FC = () => {
     setCardQuantity(1);
   };
 
-  const handleResetGame = async () => {
-    await gameStateService.resetGame();
-    setShowConfetti(false); setManualMarks({});
-    setSpeechQueue([]);
-    setNarratedNumbers([]);
-    setCurrentlySpeaking(null);
-    window.speechSynthesis.cancel();
-    if (applauseRef.current) { applauseRef.current.currentTime = 0; applauseRef.current.pause(); }
-    if (cheeringRef.current) { cheeringRef.current.currentTime = 0; cheeringRef.current.pause(); }
-  }
-
   const handleToggleAutoMarking = async () => {
     if (!currentUser) return;
     const newPreference = isAutoMarking ? 'manual' : 'auto';
@@ -546,7 +544,7 @@ const App: React.FC = () => {
 
   if (isLoading) return <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center text-2xl font-bold">Carregando o Bingo do Fabão...</div>;
   if (!currentUser) return <Auth onLoginSuccess={setCurrentUser} allUsers={users} />;
-  if (currentUser.name === 'admin' && !isAdminInPlayerView) return <AdminPanel onSwitchToPlayerView={() => setIsAdminInPlayerView(true)} onLogout={handleLogout} onResetGame={handleResetGame} />;
+  if (currentUser.name === 'admin' && !isAdminInPlayerView) return <AdminPanel onSwitchToPlayerView={() => setIsAdminInPlayerView(true)} />;
 
   return (
     <div className="min-h-screen bg-slate-900 text-white p-4 sm:p-8 bg-[radial-gradient(circle_at_top_left,_rgba(30,_58,_138,_0.4),_transparent_30%),_radial-gradient(circle_at_bottom_right,_rgba(17,_24,_39,_0.3),_transparent_40%)]">
@@ -603,10 +601,8 @@ const App: React.FC = () => {
                 {!isGameActive && !bingoWinner && (
                     <div className='text-center'>
                         {preGameCountdown !== null ? (
-                             <><p className="text-xl text-gray-300 mb-2">O jogo começa em:</p><p className="text-6xl font-bold text-sky-300 tracking-widest mb-4 animate-pulse">{preGameCountdown}</p></>
-                        ) : nextGame ? (
-                            <><p className="text-xl text-gray-300 mb-2">Próximo jogo em:</p><p className="text-4xl font-bold text-sky-300 tracking-widest mb-4">{countdown}</p></>
-                        ) : (<p className="text-xl text-gray-300">Nenhum jogo agendado. Volte mais tarde!</p>)}
+                             <><p className="text-xl text-gray-300 mb-2">O próximo jogo começa em:</p><p className="text-6xl font-bold text-sky-300 tracking-widest mb-4 animate-pulse">{preGameCountdown}</p></>
+                        ) : (<p className="text-xl text-gray-300">Aguardando o início do próximo jogo...</p>)}
                     </div>
                 )}
                 {(isGameActive || drawnNumbers.length > 0) && (
@@ -695,7 +691,6 @@ const App: React.FC = () => {
             )}
           </div>
           <aside className="space-y-8">
-            <InfoCard icon="🗓️" title="Próximo Jogo"><p className="text-lg font-semibold">{nextGame ? new Date(nextGame.startTime).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }) : 'N/A'}</p><p>Início às {nextGame ? new Date(nextGame.startTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : 'N/A'}</p></InfoCard>
             <InfoCard icon="🏆" title="Prêmios">{prizes.map(p => (<div key={p.id} className="flex justify-between items-center border-b border-white/10 pb-2 last:border-b-0"><span>{p.name}</span><span className="font-bold text-sky-300">{p.value}</span></div>))}</InfoCard>
             <InfoCard icon="👥" title="Jogadores na Sala">
                 <ul className="space-y-2 max-h-48 overflow-y-auto">
