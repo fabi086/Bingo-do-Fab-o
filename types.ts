@@ -39,11 +39,6 @@ export interface PlayerPreferences {
   [playerName: string]: 'auto' | 'manual';
 }
 
-export interface BingoClaim {
-  playerName: string;
-  cardId: string;
-}
-
 export interface SharedGameState {
   users: User[];
   onlineUsers: string[];
@@ -57,5 +52,5 @@ export interface SharedGameState {
   preGameCountdown: number | null;
   gameStartingId: number | null;
   playerPreferences: PlayerPreferences;
-  bingoClaim: BingoClaim | null;
+  invalidBingoClaim: { playerName: string; timestamp: number } | null;
 }

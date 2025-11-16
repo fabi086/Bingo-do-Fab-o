@@ -1,7 +1,3 @@
-
-
-
-
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { Prize, GeneratedCard, User, GameMode } from './types';
 import { generateBingoCard } from './services/geminiService';
@@ -115,7 +111,7 @@ const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: Game
 const App: React.FC = () => {
   // --- Shared State from Service ---
   const [gameState, setGameState] = useState(gameStateService.getState());
-  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId, playerPreferences, bingoClaim } = gameState;
+  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId, playerPreferences, invalidBingoClaim } = gameState;
 
   // --- Local State (per-device/user) ---
   const [currentUser, setCurrentUser] = useLocalStorage<User | null>('bingoCurrentUser', null);
@@ -135,6 +131,7 @@ const App: React.FC = () => {
   const [speechQueue, setSpeechQueue] = useState<number[]>([]);
   const [narratedNumbers, setNarratedNumbers] = useState<number[]>([]);
   const [currentlySpeaking, setCurrentlySpeaking] = useState<number | null>(null);
+  const [showInvalidBingoMsg, setShowInvalidBingoMsg] = useState(false);
 
   const applauseRef = useRef<HTMLAudioElement>(null);
   const cheeringRef = useRef<HTMLAudioElement>(null);
@@ -380,6 +377,25 @@ const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
 
+  // Effect to handle invalid bingo claims
+  useEffect(() => {
+    if (invalidBingoClaim && invalidBingoClaim.playerName === currentUser?.name) {
+      // Check timestamp to only react to recent claims
+      if (Date.now() - invalidBingoClaim.timestamp < 1500) {
+        setShowInvalidBingoMsg(true);
+        const timer = setTimeout(() => {
+          setShowInvalidBingoMsg(false);
+          // Optional: clear the claim from the central state after a while
+          if (gameStateService.getState().invalidBingoClaim?.playerName === currentUser?.name) {
+            gameStateService.clearInvalidBingoClaim();
+          }
+        }, 4000); // Show message for 4 seconds
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [invalidBingoClaim, currentUser]);
+
+
   // --- Other handlers ---
   
   const handleUnlockSpeech = () => {
@@ -484,15 +500,10 @@ const App: React.FC = () => {
   };
 
   const handleClaimBingo = () => {
-    if (!currentUser || myCards.length === 0 || bingoWinner || bingoClaim) return;
+    if (!currentUser || myCards.length === 0 || bingoWinner || showInvalidBingoMsg) return;
     const currentCard = myCards[currentCardIndex];
     if (currentCard) {
-        speak("Verificando seu BINGO!");
-        gameStateService.claimBingo(currentUser.name, currentCard.id);
-        // If the admin is the one claiming bingo, switch them back to the admin panel to verify.
-        if (currentUser.name === 'admin') {
-            setIsAdminInPlayerView(false);
-        }
+        gameStateService.claimBingo(currentUser.name, currentCard.id, new Set(narratedNumbers), gameMode);
     }
   };
 
@@ -633,12 +644,12 @@ const App: React.FC = () => {
                     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg p-4 z-30">
                          <button 
                             onClick={handleClaimBingo}
-                            disabled={!!bingoClaim}
+                            disabled={showInvalidBingoMsg}
                             className="w-full text-center text-5xl font-black text-white bg-gradient-to-r from-green-400 to-teal-500 rounded-lg shadow-2xl py-4 transform transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed animate-pulse"
                          >
                             BINGO!
                          </button>
-                         {bingoClaim && bingoClaim.playerName === currentUser.name && <p className="text-center text-yellow-300 mt-2 font-semibold">Sua reivindicação de BINGO está sendo verificada!</p>}
+                         {showInvalidBingoMsg && <p className="text-center text-red-400 mt-2 font-semibold">BINGO inválido! Continue jogando.</p>}
                     </div>
                 )}
               </div>

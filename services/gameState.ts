@@ -1,7 +1,32 @@
-
 import type { User, SharedGameState, GeneratedCard, GameMode, ScheduledGame } from '../types';
 
 const GAME_STATE_KEY = 'bingoGameState';
+
+// This utility function must be kept in sync between App.tsx and AdminPanel.tsx
+const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: GameMode) => {
+    for (const card of cards) {
+      const { B, I, N, G, O } = card.cardData;
+      const allNumbersOnCard = [...B, ...I, ...N, ...G, ...O].filter(n => typeof n === 'number') as number[];
+      
+      const checkLine = (line: (number | string)[]) => line.every(num => num === 'LIVRE' || numbers.has(num as number));
+      
+      if (mode === 'full') {
+        if (allNumbersOnCard.every(num => numbers.has(num))) return { cardId: card.id, playerName: card.owner };
+      } else {
+        const columns = [B, I, N, G, O];
+        for(const col of columns) if(checkLine(col)) return { cardId: card.id, playerName: card.owner };
+        for (let i = 0; i < 5; i++) {
+            const row = columns.map(col => col[i]);
+            if (checkLine(row)) return { cardId: card.id, playerName: card.owner };
+        }
+        const diag1 = [B[0], I[1], N[2], G[3], O[4]];
+        const diag2 = [B[4], I[3], N[2], G[1], O[0]];
+        if (checkLine(diag1) || checkLine(diag2)) return { cardId: card.id, playerName: card.owner };
+      }
+    }
+    return null;
+};
+
 
 class GameStateService {
   private state: SharedGameState;
@@ -21,7 +46,7 @@ class GameStateService {
     preGameCountdown: null,
     gameStartingId: null,
     playerPreferences: {},
-    bingoClaim: null,
+    invalidBingoClaim: null,
   };
 
   constructor() {
@@ -102,7 +127,7 @@ class GameStateService {
         onlineUsers: [],
         playerWins: {},
         playerPreferences: {},
-        bingoClaim: null,
+        invalidBingoClaim: null,
     });
   }
 
@@ -148,14 +173,14 @@ class GameStateService {
       newNumber = Math.floor(Math.random() * 75) + 1;
     } while (drawnSet.has(newNumber));
 
-    this.updateState({ drawnNumbers: [...drawnNumbers, newNumber] });
+    this.updateState({ drawnNumbers: [...drawnNumbers, newNumber], invalidBingoClaim: null });
   }
 
   setWinner(winner: { cardId: string; playerName: string }): void {
       this.updateState({
           bingoWinner: winner,
           isGameActive: false,
-          bingoClaim: null,
+          invalidBingoClaim: null,
           playerWins: {
               ...this.state.playerWins,
               [winner.playerName]: (this.state.playerWins[winner.playerName] || 0) + 1,
@@ -172,15 +197,27 @@ class GameStateService {
     });
   }
 
-  claimBingo(playerName: string, cardId: string): void {
-    // Prevent multiple claims or claims after game ends
-    if (this.state.bingoClaim || this.state.bingoWinner) return;
-    this.updateState({ bingoClaim: { playerName, cardId } });
+  claimBingo(playerName: string, cardId: string, drawnNumbers: Set<number>, gameMode: GameMode): void {
+    // Prevent claims after game ends
+    if (this.state.bingoWinner) return;
+
+    const claimedCard = this.state.generatedCards.find(c => c.id === cardId && c.owner === playerName);
+    if (!claimedCard) return; // Card not found or doesn't belong to player
+
+    const isWinner = checkForWinner([claimedCard], drawnNumbers, gameMode);
+
+    if (isWinner) {
+        this.setWinner({ cardId, playerName });
+    } else {
+        // It's a false alarm
+        this.updateState({ invalidBingoClaim: { playerName, timestamp: Date.now() } });
+    }
+  }
+  
+  clearInvalidBingoClaim(): void {
+    this.updateState({ invalidBingoClaim: null });
   }
 
-  clearBingoClaim(): void {
-    this.updateState({ bingoClaim: null });
-  }
 
   // --- Private methods ---
 
