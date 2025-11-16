@@ -100,10 +100,10 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
               Agendar Novo Jogo
             </button>
              <button
-              onClick={async () => await gameStateService.addGame(new Date(Date.now() + 30000).toISOString())}
+              onClick={async () => await gameStateService.startInstantGame()}
               className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
             >
-              Jogo Instantâneo (inicia em 30s)
+              Jogo Instantâneo (inicia em 10s)
             </button>
           </div>
           <div className="mt-6">

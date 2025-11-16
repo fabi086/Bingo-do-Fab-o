@@ -39,6 +39,11 @@ export interface PlayerPreferences {
   [playerName: string]: 'auto' | 'manual';
 }
 
+export interface Reaction {
+  type: 'goodLuck' | 'shake';
+  timestamp: number;
+}
+
 export interface SharedGameState {
   users: User[];
   onlineUsers: string[];
@@ -53,4 +58,5 @@ export interface SharedGameState {
   gameStartingId: number | null;
   playerPreferences: PlayerPreferences;
   invalidBingoClaim: { playerName: string; timestamp: number } | null;
+  lastReaction: Reaction | null;
 }

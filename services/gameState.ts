@@ -1,4 +1,4 @@
-import type { User, SharedGameState, GeneratedCard, GameMode, ScheduledGame } from '../types';
+import type { User, SharedGameState, GeneratedCard, GameMode, ScheduledGame, Reaction } from '../types';
 import { supabase } from './supabaseClient';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
@@ -47,6 +47,7 @@ class GameStateService {
     gameStartingId: null,
     playerPreferences: {},
     invalidBingoClaim: null,
+    lastReaction: null,
   };
 
   constructor() {
@@ -130,6 +131,7 @@ class GameStateService {
         playerWins: {},
         playerPreferences: {},
         invalidBingoClaim: null,
+        lastReaction: null,
     });
   }
 
@@ -161,6 +163,17 @@ class GameStateService {
           scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId),
           gameStartingId: null,
       });
+  }
+
+  async startInstantGame(): Promise<void> {
+    const gameId = Date.now();
+    const startTime = new Date(Date.now() + 10000).toISOString();
+    const newGame: ScheduledGame = { id: gameId, startTime };
+    await this.updateState({
+        scheduledGames: [...this.state.scheduledGames, newGame],
+        gameStartingId: gameId,
+        preGameCountdown: 10,
+    });
   }
 
   async drawNextNumber(): Promise<void> {
@@ -222,6 +235,10 @@ class GameStateService {
   
   async clearInvalidBingoClaim(): Promise<void> {
     await this.updateState({ invalidBingoClaim: null });
+  }
+
+  async triggerReaction(type: Reaction['type']): Promise<void> {
+    await this.updateState({ lastReaction: { type, timestamp: Date.now() } });
   }
 
 

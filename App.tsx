@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import type { Prize, GeneratedCard, User, GameMode } from './types';
+import type { Prize, GeneratedCard, User, GameMode, Reaction } from './types';
 import { generateBingoCard } from './services/geminiService';
 import { gameStateService } from './services/gameState';
 import BingoBall from './components/BingoBall';
@@ -108,7 +108,7 @@ const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: Game
 const App: React.FC = () => {
   // --- Shared State from Service ---
   const [gameState, setGameState] = useState(gameStateService.getState());
-  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId, playerPreferences, invalidBingoClaim } = gameState;
+  const { users, onlineUsers, generatedCards, drawnNumbers, isGameActive, bingoWinner, gameMode, scheduledGames, preGameCountdown, gameStartingId, playerPreferences, invalidBingoClaim, lastReaction } = gameState;
 
   // --- Local State (per-device/user) ---
   const [currentUser, setCurrentUser] = useLocalStorage<User | null>('bingoCurrentUser', null);
@@ -131,6 +131,9 @@ const App: React.FC = () => {
 
   const applauseRef = useRef<HTMLAudioElement>(null);
   const cheeringRef = useRef<HTMLAudioElement>(null);
+  const goodLuckSoundRef = useRef<HTMLAudioElement>(null);
+  const shakeSoundRef = useRef<HTMLAudioElement>(null);
+  const lastReactionTimestampRef = useRef<number>(0);
   const drawTimeoutRef = useRef<number | null>(null);
   const prevDrawnNumbersRef = useRef<number[]>([]);
   const prevBingoWinnerRef = useRef(bingoWinner);
@@ -142,7 +145,13 @@ const App: React.FC = () => {
   const myCards = useMemo(() => generatedCards.filter(c => c.owner === currentUser?.name), [generatedCards, currentUser]);
   const isAutoMarking = useMemo(() => (playerPreferences[currentUser?.name ?? ''] ?? 'auto') === 'auto', [playerPreferences, currentUser]);
   const nextGame = useMemo(() => scheduledGames.filter(g => new Date(g.startTime).getTime() > Date.now()).sort((a,b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())[0] || null, [scheduledGames]);
-  const allPlayers = useMemo(() => onlineUsers.map(u => u === 'admin' ? 'Fábio' : u).sort(), [onlineUsers]);
+  const allPlayers = useMemo(() => {
+    const players = new Set(onlineUsers.map(u => u === 'admin' ? 'Fábio' : u));
+    if (currentUser?.name === 'admin') {
+      players.add('Fábio');
+    }
+    return Array.from(players).sort();
+  }, [onlineUsers, currentUser]);
   const totalPrice = useMemo(() => (Math.floor(cardQuantity / 2) * prices.double) + (cardQuantity % 2 * prices.single), [cardQuantity]);
   const lastNumberForDisplay = currentlySpeaking ?? (narratedNumbers.length > 0 ? narratedNumbers[narratedNumbers.length - 1] : null);
   const isMyBingoInvalid = invalidBingoClaim?.playerName === currentUser?.name;
@@ -331,7 +340,12 @@ const App: React.FC = () => {
           
           const speakWinner = async () => {
             await new Promise(resolve => setTimeout(resolve, 250)); 
-            speak(`BINGOOOOO! TEMOS UM VENCEDOR! Parabéns para ${winnerName}! Que sorte!`);
+            await speak(`BINGOOOOO! TEMOS UM VENCEDOR! Parabéns para ${winnerName}! Que sorte!`);
+            setTimeout(() => {
+                if (!gameStateService.getState().isGameActive) {
+                    speak('Atenção. Em breve um novo jogo começará!');
+                }
+            }, 3000);
           }
           speakWinner();
       }
@@ -389,6 +403,26 @@ const App: React.FC = () => {
     }
     countdownLogic();
   }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
+
+  // Player Reactions Handler
+  useEffect(() => {
+    if (lastReaction && lastReaction.timestamp > lastReactionTimestampRef.current) {
+        lastReactionTimestampRef.current = lastReaction.timestamp;
+        if (isMuted) return;
+
+        let soundToPlay: React.RefObject<HTMLAudioElement> | null = null;
+        if (lastReaction.type === 'goodLuck') {
+            soundToPlay = goodLuckSoundRef;
+        } else if (lastReaction.type === 'shake') {
+            soundToPlay = shakeSoundRef;
+        }
+
+        if (soundToPlay?.current) {
+            soundToPlay.current.volume = volume * 0.5; // Lower volume to not overpower narrator
+            soundToPlay.current.play().catch(e => console.error("Reaction audio error:", e));
+        }
+    }
+  }, [lastReaction, isMuted, volume]);
 
 
   // --- Other handlers ---
@@ -530,6 +564,8 @@ const App: React.FC = () => {
       {showConfetti && <Confetti />}
       <audio ref={applauseRef} src="https://cdn.pixabay.com/audio/2021/08/04/audio_12b0c7443c.mp3" preload="auto"></audio>
       <audio ref={cheeringRef} src="https://cdn.pixabay.com/audio/2022/08/25/audio_5217983350.mp3" preload="auto"></audio>
+      <audio ref={goodLuckSoundRef} src="https://cdn.pixabay.com/audio/2022/03/15/audio_245a331599.mp3" preload="auto"></audio>
+      <audio ref={shakeSoundRef} src="https://cdn.pixabay.com/audio/2022/02/21/audio_a141164874.mp3" preload="auto"></audio>
       
       <div className="max-w-7xl mx-auto relative">
         <div className="absolute top-2 right-2 flex gap-2 z-20">
@@ -591,6 +627,14 @@ const App: React.FC = () => {
                         <p className="text-xl text-green-200 mt-2">Vencedor: {bingoWinner.playerName === 'admin' ? 'Fábio' : bingoWinner.playerName}!</p>
                      </div>
                  )}
+                 <div className="mt-6 flex justify-center gap-4">
+                    <button onClick={() => gameStateService.triggerReaction('goodLuck')} className="bg-purple-500/80 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105 flex items-center gap-2">
+                        <span className="text-xl">🪄</span> Chama a Boa!
+                    </button>
+                    <button onClick={() => gameStateService.triggerReaction('shake')} className="bg-teal-500/80 hover:bg-teal-600 text-white font-bold py-2 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105 flex items-center gap-2">
+                        <span className="text-xl">🔀</span> Meche o Saco!
+                    </button>
+                </div>
             </div>
 
             {myCards.length === 0 && !isGameActive && (
@@ -612,7 +656,7 @@ const App: React.FC = () => {
             )}
             
             {myCards.length > 0 && (
-              <div className="relative">
+              <div className="relative md:flex md:flex-col">
                 <div className="flex flex-wrap justify-between items-center mb-4 gap-4">
                   <h2 className="text-3xl font-bold text-white">Minhas Cartelas ({currentUser.name === 'admin' ? 'Fábio' : currentUser.name})</h2>
                   <div className="flex items-center gap-4">
@@ -636,7 +680,7 @@ const App: React.FC = () => {
                     <div className="space-y-6 max-w-md mx-auto">{myCards.map((card, index) => (<div key={card.id}><h3 className="text-center font-bold text-lg text-gray-300 mb-2">Cartela {index + 1}</h3><div className={`${bingoWinner?.cardId === card.id ? 'ring-4 ring-sky-400 animate-pulse' : ''} rounded-lg`}><BingoCard cardData={card.cardData} drawnNumbers={new Set(narratedNumbers)} isAutoMarking={isAutoMarking} manualMarks={new Set(manualMarks[card.id] || ['LIVRE'])} onCellClick={(num) => handleCellClick(card.id, num)} /></div></div>))}</div>
                 )}
                 {!isAutoMarking && isGameActive && !bingoWinner && (
-                    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg p-4 z-30">
+                    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg p-4 md:static md:translate-x-0 md:w-full md:p-0 md:mt-8 z-30">
                          <button 
                             onClick={handleClaimBingo}
                             disabled={isMyBingoInvalid}
