@@ -271,11 +271,19 @@ const App: React.FC = () => {
     utterance.onerror = (e) => {
         isNarratingRef.current = false;
         setCurrentlySpeaking(null);
+
+        if (e.error === 'not-allowed') {
+            console.warn('Speech narration was not allowed. Needs user interaction.');
+            setIsSpeechBlocked(true);
+            // Do not remove the number from the queue. It will be re-attempted once speech is unblocked.
+            return;
+        }
+        
         if (e.error === 'interrupted' || e.error === 'canceled') {
             console.log('Narration interrupted, will retry.');
         } else {
             console.error('Speech error during narration:', e.error);
-            // If a speech error occurs, mark the number anyway so the game doesn't get stuck visually
+            // Fallback: If another error occurs, mark the number and move on so the game isn't stuck.
             setNarratedNumbers(prev => [...prev, numberToSpeak]);
             setSpeechQueue(prevQueue => prevQueue.slice(1));
         }
