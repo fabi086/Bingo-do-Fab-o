@@ -11,7 +11,7 @@ interface AdminPanelProps {
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout, onResetGame }) => {
   const [gameState, setGameState] = useState(gameStateService.getState());
-  const { gameMode, scheduledGames, isGameActive } = gameState;
+  const { gameMode, scheduledGames } = gameState;
   const [newGameTime, setNewGameTime] = useState('');
 
   useEffect(() => {
@@ -19,13 +19,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
     return unsubscribe;
   }, []);
   
-  // Automatically switch to player view when the game starts
-  useEffect(() => {
-    if (isGameActive) {
-      onSwitchToPlayerView();
-    }
-  }, [isGameActive, onSwitchToPlayerView]);
-
   const handleAddGame = () => {
     if (newGameTime) {
       gameStateService.addGame(new Date(newGameTime).toISOString());
