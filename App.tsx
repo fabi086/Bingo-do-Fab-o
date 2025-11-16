@@ -131,7 +131,6 @@ const App: React.FC = () => {
   const [speechQueue, setSpeechQueue] = useState<number[]>([]);
   const [narratedNumbers, setNarratedNumbers] = useState<number[]>([]);
   const [currentlySpeaking, setCurrentlySpeaking] = useState<number | null>(null);
-  const [showInvalidBingoMsg, setShowInvalidBingoMsg] = useState(false);
 
   const applauseRef = useRef<HTMLAudioElement>(null);
   const cheeringRef = useRef<HTMLAudioElement>(null);
@@ -149,6 +148,7 @@ const App: React.FC = () => {
   const allPlayers = useMemo(() => onlineUsers.map(u => u === 'admin' ? 'Fábio' : u).sort(), [onlineUsers]);
   const totalPrice = useMemo(() => (Math.floor(cardQuantity / 2) * prices.double) + (cardQuantity % 2 * prices.single), [cardQuantity]);
   const lastNumberForDisplay = currentlySpeaking ?? (narratedNumbers.length > 0 ? narratedNumbers[narratedNumbers.length - 1] : null);
+  const isMyBingoInvalid = invalidBingoClaim?.playerName === currentUser?.name;
 
   // --- Effects ---
 
@@ -377,24 +377,6 @@ const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
 
-  // Effect to handle invalid bingo claims
-  useEffect(() => {
-    if (invalidBingoClaim && invalidBingoClaim.playerName === currentUser?.name) {
-      // Check timestamp to only react to recent claims
-      if (Date.now() - invalidBingoClaim.timestamp < 1500) {
-        setShowInvalidBingoMsg(true);
-        const timer = setTimeout(() => {
-          setShowInvalidBingoMsg(false);
-          // Optional: clear the claim from the central state after a while
-          if (gameStateService.getState().invalidBingoClaim?.playerName === currentUser?.name) {
-            gameStateService.clearInvalidBingoClaim();
-          }
-        }, 4000); // Show message for 4 seconds
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [invalidBingoClaim, currentUser]);
-
 
   // --- Other handlers ---
   
@@ -500,7 +482,7 @@ const App: React.FC = () => {
   };
 
   const handleClaimBingo = () => {
-    if (!currentUser || myCards.length === 0 || bingoWinner || showInvalidBingoMsg) return;
+    if (!currentUser || myCards.length === 0 || bingoWinner || isMyBingoInvalid) return;
     const currentCard = myCards[currentCardIndex];
     if (currentCard) {
         gameStateService.claimBingo(currentUser.name, currentCard.id, new Set(narratedNumbers), gameMode);
@@ -533,8 +515,8 @@ const App: React.FC = () => {
         </div>
       )}
       {showConfetti && <Confetti />}
-      <audio ref={applauseRef} src="https://actions.google.com/sounds/v1/crowds/battle_crowd_cheer_med.ogg" preload="auto"></audio>
-      <audio ref={cheeringRef} src="https://actions.google.com/sounds/v1/crowds/crowd_applause.ogg" preload="auto"></audio>
+      <audio ref={applauseRef} src="https://cdn.pixabay.com/audio/2021/08/04/audio_12b0c7443c.mp3" preload="auto"></audio>
+      <audio ref={cheeringRef} src="https://cdn.pixabay.com/audio/2022/08/25/audio_5217983350.mp3" preload="auto"></audio>
       
       <div className="max-w-7xl mx-auto relative">
         <div className="absolute top-2 right-2 flex gap-2 z-20">
@@ -644,12 +626,12 @@ const App: React.FC = () => {
                     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg p-4 z-30">
                          <button 
                             onClick={handleClaimBingo}
-                            disabled={showInvalidBingoMsg}
+                            disabled={isMyBingoInvalid}
                             className="w-full text-center text-5xl font-black text-white bg-gradient-to-r from-green-400 to-teal-500 rounded-lg shadow-2xl py-4 transform transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed animate-pulse"
                          >
                             BINGO!
                          </button>
-                         {showInvalidBingoMsg && <p className="text-center text-red-400 mt-2 font-semibold">BINGO inválido! Continue jogando.</p>}
+                         {isMyBingoInvalid && <p className="text-center text-red-400 mt-2 font-semibold">BINGO inválido! Continue jogando.</p>}
                     </div>
                 )}
               </div>

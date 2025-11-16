@@ -198,8 +198,8 @@ class GameStateService {
   }
 
   claimBingo(playerName: string, cardId: string, drawnNumbers: Set<number>, gameMode: GameMode): void {
-    // Prevent claims after game ends
-    if (this.state.bingoWinner) return;
+    // Prevent claims after game ends or if another claim is active for this player
+    if (this.state.bingoWinner || this.state.invalidBingoClaim?.playerName === playerName) return;
 
     const claimedCard = this.state.generatedCards.find(c => c.id === cardId && c.owner === playerName);
     if (!claimedCard) return; // Card not found or doesn't belong to player
@@ -209,8 +209,15 @@ class GameStateService {
     if (isWinner) {
         this.setWinner({ cardId, playerName });
     } else {
-        // It's a false alarm
+        // It's a false alarm: set the claim and schedule its removal
         this.updateState({ invalidBingoClaim: { playerName, timestamp: Date.now() } });
+        
+        setTimeout(() => {
+            // Only clear it if it's still the same user's claim, to avoid race conditions
+            if (this.state.invalidBingoClaim?.playerName === playerName) {
+                this.clearInvalidBingoClaim();
+            }
+        }, 5000); // Cooldown period of 5 seconds
     }
   }
   
