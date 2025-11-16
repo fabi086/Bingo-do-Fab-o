@@ -27,7 +27,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
     }
   };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (!name.trim() || !password.trim() || !pixKey.trim()) {
@@ -37,7 +37,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess, allUsers }) => {
     
     const newUser: User = { name, password, pixKey };
     
-    if (gameStateService.registerUser(newUser)) {
+    if (await gameStateService.registerUser(newUser)) {
         onLoginSuccess(newUser);
     } else {
         setError('Este nome de usuário já existe.');

@@ -1,8 +1,11 @@
 import type { User, SharedGameState, GeneratedCard, GameMode, ScheduledGame } from '../types';
+import { supabase } from './supabaseClient';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
-const GAME_STATE_KEY = 'bingoGameState';
+const TABLE_NAME = 'game_state';
+const ROW_ID = 'singleton'; // Using a single row to store the entire game state
 
-// This utility function must be kept in sync between App.tsx and AdminPanel.tsx
+// This utility function must be kept in sync with App.tsx
 const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: GameMode) => {
     for (const card of cards) {
       const { B, I, N, G, O } = card.cardData;
@@ -19,9 +22,6 @@ const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: Game
             const row = columns.map(col => col[i]);
             if (checkLine(row)) return { cardId: card.id, playerName: card.owner };
         }
-        const diag1 = [B[0], I[1], N[2], G[3], O[4]];
-        const diag2 = [B[4], I[3], N[2], G[1], O[0]];
-        if (checkLine(diag1) || checkLine(diag2)) return { cardId: card.id, playerName: card.owner };
       }
     }
     return null;
@@ -31,7 +31,7 @@ const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: Game
 class GameStateService {
   private state: SharedGameState;
   private listeners: Set<(state: SharedGameState) => void>;
-  private channel: BroadcastChannel;
+  private channel: RealtimeChannel | null = null;
 
   private initialState: SharedGameState = {
     users: [{ name: 'admin', password: 'admin', pixKey: 'admin' }],
@@ -52,35 +52,37 @@ class GameStateService {
   constructor() {
     this.state = { ...this.initialState };
     this.listeners = new Set();
-    this.channel = new BroadcastChannel('bingo-game-state-channel');
-
-    // Listen for updates from other tabs
-    this.channel.onmessage = (event) => {
-      if (JSON.stringify(this.state) !== JSON.stringify(event.data)) {
-         this.state = event.data;
-         this.notifyListeners();
-      }
-    };
   }
 
-  initialize(): void {
-    try {
-      const storedState = localStorage.getItem(GAME_STATE_KEY);
-      if (storedState) {
-        const parsedState = JSON.parse(storedState);
-        const validatedState = { ...this.initialState, ...parsedState };
-        this.state = validatedState;
-      } else {
-        this.state = { ...this.initialState };
-        localStorage.setItem(GAME_STATE_KEY, JSON.stringify(this.state));
-      }
-    } catch (error) {
-      console.error('Failed to load state from localStorage:', error);
+  async initialize(): Promise<void> {
+    const { data, error } = await supabase
+        .from(TABLE_NAME)
+        .select('state')
+        .eq('id', ROW_ID)
+        .single();
+
+    if (error && error.code !== 'PGRST116') { // PGRST116: "exact one row not found"
+      console.error('Error fetching game state:', error);
       this.state = { ...this.initialState };
+    } else if (data) {
+        this.state = { ...this.initialState, ...data.state };
+    } else {
+      // No state found, so create it
+      this.state = { ...this.initialState };
+      await this.updateState(this.state, true); // Force full state update
     }
+
     this.notifyListeners();
+    this.setupRealtimeSubscription();
   }
   
+  cleanup(): void {
+    if (this.channel) {
+      supabase.removeChannel(this.channel);
+      this.channel = null;
+    }
+  }
+
   // --- Public API for components ---
 
   subscribe(callback: (state: SharedGameState) => void): () => void {
@@ -94,66 +96,66 @@ class GameStateService {
   
   // --- Actions ---
 
-  registerUser(newUser: User): boolean {
+  async registerUser(newUser: User): Promise<boolean> {
     if (this.state.users.some(u => u.name === newUser.name)) {
         return false;
     }
-    this.updateState({ users: [...this.state.users, newUser] });
+    await this.updateState({ users: [...this.state.users, newUser] });
     return true;
   }
   
-  login(name: string): void {
+  async login(name: string): Promise<void> {
      if (!this.state.onlineUsers.includes(name)) {
-        this.updateState({ onlineUsers: [...this.state.onlineUsers, name] });
+        await this.updateState({ onlineUsers: [...this.state.onlineUsers, name] });
     }
   }
 
-  logout(name: string): void {
-    this.updateState({ onlineUsers: this.state.onlineUsers.filter(u => u !== name) });
+  async logout(name: string): Promise<void> {
+    await this.updateState({ onlineUsers: this.state.onlineUsers.filter(u => u !== name) });
   }
 
-  addCards(newCards: GeneratedCard[]): void {
-    this.updateState({ generatedCards: [...this.state.generatedCards, ...newCards] });
+  async addCards(newCards: GeneratedCard[]): Promise<void> {
+    await this.updateState({ generatedCards: [...this.state.generatedCards, ...newCards] });
   }
 
-  resetGame(): void {
-    this.updateState({
+  async resetGame(): Promise<void> {
+    await this.updateState({
         drawnNumbers: [],
         bingoWinner: null,
         isGameActive: false,
         preGameCountdown: null,
         gameStartingId: null,
         generatedCards: [],
-        onlineUsers: [],
+        onlineUsers: this.state.onlineUsers, // Keep users online
         playerWins: {},
         playerPreferences: {},
         invalidBingoClaim: null,
     });
   }
 
-  setGameMode(mode: GameMode): void {
-    this.updateState({ gameMode: mode });
+  async setGameMode(mode: GameMode): Promise<void> {
+    await this.updateState({ gameMode: mode });
   }
 
-  addGame(startTime: string): void {
+  async addGame(startTime: string): Promise<void> {
      const newGame: ScheduledGame = { id: Date.now(), startTime };
-     this.updateState({ scheduledGames: [...this.state.scheduledGames, newGame] });
+     await this.updateState({ scheduledGames: [...this.state.scheduledGames, newGame] });
   }
 
-  removeGame(gameId: number): void {
-    this.updateState({ scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId) });
+  async removeGame(gameId: number): Promise<void> {
+    await this.updateState({ scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId) });
   }
   
-  setGameStartingId(id: number | null): void {
-    this.updateState({ gameStartingId: id });
+  async setGameStartingId(id: number | null): Promise<void> {
+    await this.updateState({ gameStartingId: id });
   }
 
-  setPreGameCountdown(countdown: number | null): void {
-    this.updateState({ preGameCountdown: countdown });
+  async setPreGameCountdown(countdown: number | null): Promise<void> {
+    await this.updateState({ preGameCountdown: countdown });
   }
   
-  startGame(gameId: number): void {
-      this.updateState({
+  async startGame(gameId: number): Promise<void> {
+      await this.updateState({
           isGameActive: true,
           preGameCountdown: null,
           scheduledGames: this.state.scheduledGames.filter(g => g.id !== gameId),
@@ -161,7 +163,7 @@ class GameStateService {
       });
   }
 
-  drawNextNumber(): void {
+  async drawNextNumber(): Promise<void> {
     const { drawnNumbers, isGameActive, bingoWinner } = this.state;
     if (drawnNumbers.length >= 75 || !isGameActive || bingoWinner) {
       return;
@@ -173,11 +175,11 @@ class GameStateService {
       newNumber = Math.floor(Math.random() * 75) + 1;
     } while (drawnSet.has(newNumber));
 
-    this.updateState({ drawnNumbers: [...drawnNumbers, newNumber], invalidBingoClaim: null });
+    await this.updateState({ drawnNumbers: [...drawnNumbers, newNumber], invalidBingoClaim: null });
   }
 
-  setWinner(winner: { cardId: string; playerName: string }): void {
-      this.updateState({
+  async setWinner(winner: { cardId: string; playerName: string }): Promise<void> {
+      await this.updateState({
           bingoWinner: winner,
           isGameActive: false,
           invalidBingoClaim: null,
@@ -188,8 +190,8 @@ class GameStateService {
       });
   }
   
-  setPlayerPreference(playerName: string, preference: 'auto' | 'manual'): void {
-    this.updateState({
+  async setPlayerPreference(playerName: string, preference: 'auto' | 'manual'): Promise<void> {
+    await this.updateState({
         playerPreferences: {
             ...this.state.playerPreferences,
             [playerName]: preference,
@@ -197,52 +199,77 @@ class GameStateService {
     });
   }
 
-  claimBingo(playerName: string, cardId: string, drawnNumbers: Set<number>, gameMode: GameMode): void {
-    // Prevent claims after game ends or if another claim is active for this player
+  async claimBingo(playerName: string, cardId: string, drawnNumbers: Set<number>, gameMode: GameMode): Promise<void> {
     if (this.state.bingoWinner || this.state.invalidBingoClaim?.playerName === playerName) return;
 
     const claimedCard = this.state.generatedCards.find(c => c.id === cardId && c.owner === playerName);
-    if (!claimedCard) return; // Card not found or doesn't belong to player
+    if (!claimedCard) return;
 
     const isWinner = checkForWinner([claimedCard], drawnNumbers, gameMode);
 
     if (isWinner) {
-        this.setWinner({ cardId, playerName });
+        await this.setWinner({ cardId, playerName });
     } else {
-        // It's a false alarm: set the claim and schedule its removal
-        this.updateState({ invalidBingoClaim: { playerName, timestamp: Date.now() } });
+        await this.updateState({ invalidBingoClaim: { playerName, timestamp: Date.now() } });
         
-        setTimeout(() => {
-            // Only clear it if it's still the same user's claim, to avoid race conditions
+        setTimeout(async () => {
             if (this.state.invalidBingoClaim?.playerName === playerName) {
-                this.clearInvalidBingoClaim();
+                await this.clearInvalidBingoClaim();
             }
-        }, 5000); // Cooldown period of 5 seconds
+        }, 5000);
     }
   }
   
-  clearInvalidBingoClaim(): void {
-    this.updateState({ invalidBingoClaim: null });
+  async clearInvalidBingoClaim(): Promise<void> {
+    await this.updateState({ invalidBingoClaim: null });
   }
 
 
   // --- Private methods ---
+  private setupRealtimeSubscription(): void {
+    if (this.channel) return;
+
+    this.channel = supabase
+        .channel('game_state_channel')
+        .on(
+            'postgres_changes',
+            { event: 'UPDATE', schema: 'public', table: TABLE_NAME, filter: `id=eq.${ROW_ID}` },
+            (payload) => {
+                const newState = (payload.new as { state: SharedGameState }).state;
+                if (JSON.stringify(this.state) !== JSON.stringify(newState)) {
+                    this.state = newState;
+                    this.notifyListeners();
+                }
+            }
+        )
+        .subscribe((status, err) => {
+            if (status === 'SUBSCRIBED') {
+                console.log('Connected to real-time channel!');
+            }
+            if (err) {
+                console.error('Real-time subscription error:', err);
+            }
+        });
+  }
 
   private notifyListeners(): void {
     this.listeners.forEach(callback => callback(this.state));
   }
   
-  private updateState(newState: Partial<SharedGameState>): void {
-    const updatedState = { ...this.state, ...newState };
+  private async updateState(newState: Partial<SharedGameState>, isFullState = false): Promise<void> {
+    const updatedState = isFullState ? (newState as SharedGameState) : { ...this.state, ...newState };
     this.state = updatedState;
     
-    try {
-      localStorage.setItem(GAME_STATE_KEY, JSON.stringify(updatedState));
-      this.channel.postMessage(updatedState);
-    } catch (error) {
-      console.error('Failed to save or broadcast state:', error);
+    const { error } = await supabase
+        .from(TABLE_NAME)
+        .upsert({ id: ROW_ID, state: updatedState });
+
+    if (error) {
+      console.error('Failed to save state to Supabase:', error);
     }
 
+    // Notify local listeners immediately for better responsiveness.
+    // Other clients will be notified by the real-time subscription.
     this.notifyListeners();
   }
 }

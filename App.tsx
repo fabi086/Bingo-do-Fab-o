@@ -99,9 +99,6 @@ const checkForWinner = (cards: GeneratedCard[], numbers: Set<number>, mode: Game
             const row = columns.map(col => col[i]);
             if (checkLine(row)) return { cardId: card.id, playerName: card.owner };
         }
-        const diag1 = [B[0], I[1], N[2], G[3], O[4]];
-        const diag2 = [B[4], I[3], N[2], G[1], O[0]];
-        if (checkLine(diag1) || checkLine(diag2)) return { cardId: card.id, playerName: card.owner };
       }
     }
     return null;
@@ -154,13 +151,21 @@ const App: React.FC = () => {
 
   // Initialize and Subscribe to game state service
   useEffect(() => {
-    gameStateService.initialize();
-    setIsLoading(false);
-    const unsubscribe = gameStateService.subscribe(setGameState);
-    // On initial load, sync the narrated numbers with the drawn numbers
-    // so if a user joins mid-game, their card is correctly marked up to that point.
-    setNarratedNumbers(gameStateService.getState().drawnNumbers);
-    return unsubscribe;
+    const initialize = async () => {
+        await gameStateService.initialize();
+        setIsLoading(false);
+        const unsubscribe = gameStateService.subscribe(setGameState);
+        // On initial load, sync the narrated numbers with the drawn numbers
+        // so if a user joins mid-game, their card is correctly marked up to that point.
+        setNarratedNumbers(gameStateService.getState().drawnNumbers);
+        return unsubscribe;
+    }
+    const unsubPromise = initialize();
+    
+    return () => {
+        unsubPromise.then(unsub => unsub && unsub());
+        gameStateService.cleanup();
+    };
   }, []);
 
   // Handle user login/logout for online status
@@ -256,8 +261,8 @@ const App: React.FC = () => {
             const currentState = gameStateService.getState();
             if (currentState.isGameActive && !currentState.bingoWinner) {
                  if (drawTimeoutRef.current) clearTimeout(drawTimeoutRef.current);
-                 drawTimeoutRef.current = window.setTimeout(() => {
-                    gameStateService.drawNextNumber();
+                 drawTimeoutRef.current = window.setTimeout(async () => {
+                    await gameStateService.drawNextNumber();
                 }, DRAW_INTERVAL_MS);
             }
         }
@@ -282,24 +287,27 @@ const App: React.FC = () => {
 
   // --- Reactive Winner Check (for Auto-Marking players): Admin checks for winner when numbers change ---
   useEffect(() => {
-    if (currentUser?.name !== 'admin' || !isGameActive || bingoWinner || drawnNumbers.length < 5) return;
+    const checkWinnerAsync = async () => {
+        if (currentUser?.name !== 'admin' || !isGameActive || bingoWinner || drawnNumbers.length < 5) return;
     
-    // Only check for winners among players using auto-marking
-    const autoMarkingPlayers = new Set(Object.keys(playerPreferences).filter(p => playerPreferences[p] === 'auto'));
-    // Include players who haven't set a preference yet (defaults to auto)
-    const allPlayerNames = new Set(generatedCards.map(c => c.owner));
-    allPlayerNames.forEach(name => {
-        if(playerPreferences[name] === undefined) {
-            autoMarkingPlayers.add(name);
+        // Only check for winners among players using auto-marking
+        const autoMarkingPlayers = new Set(Object.keys(playerPreferences).filter(p => playerPreferences[p] === 'auto'));
+        // Include players who haven't set a preference yet (defaults to auto)
+        const allPlayerNames = new Set(generatedCards.map(c => c.owner));
+        allPlayerNames.forEach(name => {
+            if(playerPreferences[name] === undefined) {
+                autoMarkingPlayers.add(name);
+            }
+        });
+
+        const cardsToCheck = generatedCards.filter(card => autoMarkingPlayers.has(card.owner));
+
+        const winner = checkForWinner(cardsToCheck, new Set(drawnNumbers), gameMode);
+        if (winner) {
+          await gameStateService.setWinner(winner);
         }
-    });
-
-    const cardsToCheck = generatedCards.filter(card => autoMarkingPlayers.has(card.owner));
-
-    const winner = checkForWinner(cardsToCheck, new Set(drawnNumbers), gameMode);
-    if (winner) {
-      gameStateService.setWinner(winner);
     }
+    checkWinnerAsync();
   }, [drawnNumbers, isGameActive, bingoWinner, currentUser, gameMode, generatedCards, playerPreferences]);
   
   // --- Reactive Winner Celebration: Trigger effects when a winner is declared ---
@@ -330,9 +338,9 @@ const App: React.FC = () => {
       if (distance <= 1000) {
         setCountdown("O jogo vai começar!");
         if (currentUser?.name === 'admin') {
-            gameStateService.setGameStartingId(nextGame.id);
+            await gameStateService.setGameStartingId(nextGame.id);
             await speak(`Atenção, o bingo vai começar em 10 segundos. Boa sorte!`);
-            gameStateService.setPreGameCountdown(10);
+            await gameStateService.setPreGameCountdown(10);
         }
         clearInterval(timer);
         return;
@@ -347,34 +355,31 @@ const App: React.FC = () => {
   useEffect(() => {
     if (preGameCountdown === null || isGameActive || currentUser?.name !== 'admin') return;
   
-    if (preGameCountdown === 0) {
-      if (gameStartingId) {
-        const kickOffGame = async () => {
-          // Announce the start, then update state, then draw first number
-          await speak("Começou!");
-          gameStateService.startGame(gameStartingId);
-          // Short suspense before the first number is called
-          setTimeout(() => {
-            // Re-check state to ensure game is still active before drawing
-            if (gameStateService.getState().isGameActive) {
-              gameStateService.drawNextNumber();
-            }
-          }, 1500);
-        };
-        kickOffGame();
-      }
-      return;
+    const countdownLogic = async () => {
+        if (preGameCountdown === 0) {
+          if (gameStartingId) {
+              await speak("Começou!");
+              await gameStateService.startGame(gameStartingId);
+              setTimeout(async () => {
+                if (gameStateService.getState().isGameActive) {
+                  await gameStateService.drawNextNumber();
+                }
+              }, 1500);
+          }
+          return;
+        }
+      
+        const timer = setTimeout(async () => {
+          const newCountdown = preGameCountdown - 1;
+          await gameStateService.setPreGameCountdown(newCountdown);
+          if (newCountdown > 0) {
+            speak(String(newCountdown));
+          }
+        }, 1000);
+      
+        return () => clearTimeout(timer);
     }
-  
-    const timer = setTimeout(() => {
-      const newCountdown = preGameCountdown - 1;
-      gameStateService.setPreGameCountdown(newCountdown);
-      if (newCountdown > 0) {
-        speak(String(newCountdown));
-      }
-    }, 1000);
-  
-    return () => clearTimeout(timer);
+    countdownLogic();
   }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
 
 
@@ -431,7 +436,7 @@ const App: React.FC = () => {
         existingCardSignatures.add(signature);
         newCards.push({ id: `card-${Date.now()}-${i}`, cardData: newCardData, owner: currentUser.name });
       }
-      gameStateService.addCards(newCards);
+      await gameStateService.addCards(newCards);
     } catch (err) { setError(err instanceof Error ? err.message : 'Falha ao gerar cartela.'); } 
     finally { setIsGenerating(false); }
   }, [currentUser]);
@@ -442,8 +447,8 @@ const App: React.FC = () => {
     setCardQuantity(1);
   };
 
-  const handleResetGame = () => {
-    gameStateService.resetGame();
+  const handleResetGame = async () => {
+    await gameStateService.resetGame();
     setShowConfetti(false); setManualMarks({});
     setSpeechQueue([]);
     setNarratedNumbers([]);
@@ -453,7 +458,7 @@ const App: React.FC = () => {
     if (cheeringRef.current) { cheeringRef.current.currentTime = 0; cheeringRef.current.pause(); }
   }
 
-  const handleToggleAutoMarking = () => {
+  const handleToggleAutoMarking = async () => {
     if (!currentUser) return;
     const newPreference = isAutoMarking ? 'manual' : 'auto';
 
@@ -469,7 +474,7 @@ const App: React.FC = () => {
         });
         setManualMarks(prev => ({ ...prev, ...newManualMarks }));
     }
-    gameStateService.setPlayerPreference(currentUser.name, newPreference);
+    await gameStateService.setPlayerPreference(currentUser.name, newPreference);
   };
 
   const handleCellClick = (cardId: string, num: number | string) => {
@@ -481,11 +486,11 @@ const App: React.FC = () => {
     });
   };
 
-  const handleClaimBingo = () => {
+  const handleClaimBingo = async () => {
     if (!currentUser || myCards.length === 0 || bingoWinner || isMyBingoInvalid) return;
     const currentCard = myCards[currentCardIndex];
     if (currentCard) {
-        gameStateService.claimBingo(currentUser.name, currentCard.id, new Set(narratedNumbers), gameMode);
+        await gameStateService.claimBingo(currentUser.name, currentCard.id, new Set(narratedNumbers), gameMode);
     }
   };
 

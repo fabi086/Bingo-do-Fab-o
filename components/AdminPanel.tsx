@@ -16,12 +16,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
 
   useEffect(() => {
     const unsubscribe = gameStateService.subscribe(setGameState);
-    return unsubscribe;
+    return () => {
+        if (unsubscribe) unsubscribe();
+    };
   }, []);
   
-  const handleAddGame = () => {
+  const handleAddGame = async () => {
     if (newGameTime) {
-      gameStateService.addGame(new Date(newGameTime).toISOString());
+      await gameStateService.addGame(new Date(newGameTime).toISOString());
       setNewGameTime('');
     }
   };
@@ -58,10 +60,10 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
                 name="gameMode" 
                 value="line" 
                 checked={gameMode === 'line'} 
-                onChange={() => gameStateService.setGameMode('line')}
+                onChange={async () => await gameStateService.setGameMode('line')}
                 className="form-radio h-5 w-5 text-sky-500 bg-gray-700 border-gray-600 focus:ring-sky-600"
               />
-              <span className="text-lg font-semibold">Linha / Vertical / Diagonal</span>
+              <span className="text-lg font-semibold">Linha / Vertical</span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input 
@@ -69,7 +71,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
                 name="gameMode" 
                 value="full" 
                 checked={gameMode === 'full'} 
-                onChange={() => gameStateService.setGameMode('full')}
+                onChange={async () => await gameStateService.setGameMode('full')}
                 className="form-radio h-5 w-5 text-sky-500 bg-gray-700 border-gray-600 focus:ring-sky-600"
               />
               <span className="text-lg font-semibold">Cartela Cheia</span>
@@ -98,7 +100,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
               Agendar Novo Jogo
             </button>
              <button
-              onClick={() => gameStateService.addGame(new Date(Date.now() + 30000).toISOString())}
+              onClick={async () => await gameStateService.addGame(new Date(Date.now() + 30000).toISOString())}
               className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
             >
               Jogo Instantâneo (inicia em 30s)
@@ -112,7 +114,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onSwitchToPlayerView, onLogout,
                   <span className="font-medium">
                     {new Date(game.startTime).toLocaleString('pt-BR')}
                   </span>
-                  <button onClick={() => gameStateService.removeGame(game.id)} className="text-red-400 hover:text-red-600 font-bold text-sm">
+                  <button onClick={async () => await gameStateService.removeGame(game.id)} className="text-red-400 hover:text-red-600 font-bold text-sm">
                     Remover
                   </button>
                 </li>
