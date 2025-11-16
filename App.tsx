@@ -41,6 +41,10 @@ const callerPhrases = [
     "Marcando e ganhando, com o número...",
     "Atenção total para o número...",
     "É agora! O número é...",
+    "VAI, NÚMERO...",
+    "PRA FAZER BINGO!",
+    "ACELERA, NÚMERO...",
+    "ESQUENTOU, SAIU O NÚMERO...",
 ];
 
 const useLocalStorage = <T,>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] => {
@@ -129,6 +133,8 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSpeechBlocked, setIsSpeechBlocked] = useState(false);
   const [speechQueue, setSpeechQueue] = useState<number[]>([]);
+  const [narratedNumbers, setNarratedNumbers] = useState<number[]>([]);
+  const [currentlySpeaking, setCurrentlySpeaking] = useState<number | null>(null);
 
   const applauseRef = useRef<HTMLAudioElement>(null);
   const cheeringRef = useRef<HTMLAudioElement>(null);
@@ -137,7 +143,6 @@ const App: React.FC = () => {
   const prevBingoWinnerRef = useRef(bingoWinner);
   const lastUtteranceRef = useRef<string | null>(null);
   const isNarratingRef = useRef(false);
-  const prevIsGameActiveRef = useRef(isGameActive);
   
   // --- Memos and Derived State ---
   const { playerWins } = gameState; // Destructure here to satisfy dependency arrays
@@ -145,19 +150,18 @@ const App: React.FC = () => {
   const nextGame = useMemo(() => scheduledGames.filter(g => new Date(g.startTime).getTime() > Date.now()).sort((a,b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())[0] || null, [scheduledGames]);
   const allPlayers = useMemo(() => onlineUsers.map(u => u === 'admin' ? 'Fábio' : u).sort(), [onlineUsers]);
   const totalPrice = useMemo(() => (Math.floor(cardQuantity / 2) * prices.double) + (cardQuantity % 2 * prices.single), [cardQuantity]);
+  const lastNumberForDisplay = currentlySpeaking ?? (narratedNumbers.length > 0 ? narratedNumbers[narratedNumbers.length - 1] : null);
 
   // --- Effects ---
-
-  // Update prevIsGameActiveRef after each render to detect transitions
-  useEffect(() => {
-    prevIsGameActiveRef.current = isGameActive;
-  });
 
   // Initialize and Subscribe to game state service
   useEffect(() => {
     gameStateService.initialize();
     setIsLoading(false);
     const unsubscribe = gameStateService.subscribe(setGameState);
+    // On initial load, sync the narrated numbers with the drawn numbers
+    // so if a user joins mid-game, their card is correctly marked up to that point.
+    setNarratedNumbers(gameStateService.getState().drawnNumbers);
     return unsubscribe;
   }, []);
 
@@ -230,18 +234,22 @@ const App: React.FC = () => {
     isNarratingRef.current = true;
 
     const numberToSpeak = speechQueue[0];
+    setCurrentlySpeaking(numberToSpeak);
+
     const phrase = callerPhrases[Math.floor(Math.random() * callerPhrases.length)];
     const letter = getLetterForNumber(numberToSpeak);
     const textToSpeak = `${phrase} Letra ${letter}... ${numberToSpeak}!`;
 
     const utterance = new SpeechSynthesisUtterance(textToSpeak);
     utterance.lang = 'pt-BR';
-    utterance.rate = 1.4;
-    utterance.pitch = 1.6;
+    utterance.rate = 1.5;
+    utterance.pitch = 1.7;
     utterance.volume = volume;
 
     utterance.onend = () => {
         isNarratingRef.current = false;
+        setCurrentlySpeaking(null);
+        setNarratedNumbers(prev => [...prev, numberToSpeak]); // Officially add to the marked list
         setSpeechQueue(prevQueue => prevQueue.slice(1));
 
         // If I am the admin, trigger the next draw after a delay.
@@ -258,13 +266,16 @@ const App: React.FC = () => {
     };
 
     utterance.onerror = (e) => {
+        isNarratingRef.current = false;
+        setCurrentlySpeaking(null);
         if (e.error === 'interrupted' || e.error === 'canceled') {
             console.log('Narration interrupted, will retry.');
         } else {
             console.error('Speech error during narration:', e.error);
+            // If a speech error occurs, mark the number anyway so the game doesn't get stuck visually
+            setNarratedNumbers(prev => [...prev, numberToSpeak]);
             setSpeechQueue(prevQueue => prevQueue.slice(1));
         }
-        isNarratingRef.current = false;
     };
 
     window.speechSynthesis.speak(utterance);
@@ -287,6 +298,7 @@ const App: React.FC = () => {
           if (drawTimeoutRef.current) clearTimeout(drawTimeoutRef.current); // Stop drawing new numbers
           setShowConfetti(true);
           setSpeechQueue([]); // Clear any pending numbers to be called
+          setCurrentlySpeaking(null); // Clear any number being spoken
           applauseRef.current?.play().catch(e => console.error("Audio error:", e));
           cheeringRef.current?.play().catch(e => console.error("Audio error:", e));
           const winnerName = bingoWinner.playerName === 'admin' ? 'Fábio' : bingoWinner.playerName;
@@ -329,37 +341,36 @@ const App: React.FC = () => {
   // 10-second pre-game countdown (driven by admin client)
   useEffect(() => {
     if (preGameCountdown === null || isGameActive || currentUser?.name !== 'admin') return;
-
+  
     if (preGameCountdown === 0) {
       if (gameStartingId) {
-        speak("Começou!");
-        gameStateService.startGame(gameStartingId);
+        const kickOffGame = async () => {
+          // Announce the start, then update state, then draw first number
+          await speak("Começou!");
+          gameStateService.startGame(gameStartingId);
+          // Short suspense before the first number is called
+          setTimeout(() => {
+            // Re-check state to ensure game is still active before drawing
+            if (gameStateService.getState().isGameActive) {
+              gameStateService.drawNextNumber();
+            }
+          }, 1500);
+        };
+        kickOffGame();
       }
       return;
     }
-
-    const timer = setTimeout(async () => {
+  
+    const timer = setTimeout(() => {
       const newCountdown = preGameCountdown - 1;
       gameStateService.setPreGameCountdown(newCountdown);
-      if (newCountdown > 0) speak(String(newCountdown));
+      if (newCountdown > 0) {
+        speak(String(newCountdown));
+      }
     }, 1000);
-
+  
     return () => clearTimeout(timer);
   }, [preGameCountdown, isGameActive, speak, gameStartingId, currentUser]);
-
-  // Kicks off the drawing process when the game starts. The rest is handled by the narration callback loop.
-  useEffect(() => {
-    // If the game just started (was false, is now true) AND I'm the admin...
-    if (isGameActive && !prevIsGameActiveRef.current && currentUser?.name === 'admin') {
-        // Use a small delay for suspense before the first number.
-        const startTimeout = setTimeout(() => {
-            if (gameStateService.getState().isGameActive) {
-                gameStateService.drawNextNumber();
-            }
-        }, 2000);
-        return () => clearTimeout(startTimeout);
-    }
-  }, [isGameActive, currentUser]);
 
   // --- Other handlers ---
   
@@ -429,6 +440,8 @@ const App: React.FC = () => {
     gameStateService.resetGame();
     setShowConfetti(false); setManualMarks({}); setMissedBingo(false);
     setSpeechQueue([]);
+    setNarratedNumbers([]);
+    setCurrentlySpeaking(null);
     window.speechSynthesis.cancel();
     if (applauseRef.current) { applauseRef.current.currentTime = 0; applauseRef.current.pause(); }
     if (cheeringRef.current) { cheeringRef.current.currentTime = 0; cheeringRef.current.pause(); }
@@ -438,11 +451,11 @@ const App: React.FC = () => {
     const newIsAutoMarking = !isAutoMarking;
     if (newIsAutoMarking === false) { // Switched TO manual
         const newManualMarks: Record<string, (number | string)[]> = {};
-        const drawnNumbersSet = new Set(drawnNumbers);
+        const narratedNumbersSet = new Set(narratedNumbers);
         myCards.forEach(card => {
             const marksForCard: Set<number|string> = new Set(['LIVRE']);
             [...card.cardData.B, ...card.cardData.I, ...card.cardData.N, ...card.cardData.G, ...card.cardData.O].forEach(num => {
-                if (drawnNumbersSet.has(num as number)) marksForCard.add(num);
+                if (narratedNumbersSet.has(num as number)) marksForCard.add(num);
             });
             newManualMarks[card.id] = Array.from(marksForCard);
         });
@@ -534,11 +547,11 @@ const App: React.FC = () => {
                      <div className='text-center'>
                         <div className="mb-4">
                             <p className="text-lg text-gray-300">Último número sorteado:</p>
-                            <p className="text-8xl font-black text-sky-300 my-4 animate-pop-in">{drawnNumbers.length > 0 ? drawnNumbers[drawnNumbers.length - 1] : '-'}</p>
+                            <p className="text-8xl font-black text-sky-300 my-4 animate-pop-in">{lastNumberForDisplay ?? (drawnNumbers.length > 0 ? drawnNumbers[drawnNumbers.length - 1] : '-')}</p>
                         </div>
                         <div className="bg-black/20 p-4 rounded-lg">
-                           <p className="text-sm text-gray-400 mb-2">Números Sorteados ({drawnNumbers.length}/75):</p>
-                           <div className="flex flex-wrap gap-2 justify-center h-48 overflow-y-auto">{Array.from({length: 75}, (_, i) => i + 1).map(num => (<div key={num} className={`w-8 h-8 flex items-center justify-center rounded-full text-sm font-bold ${drawnNumbers.includes(num) ? 'bg-sky-400 text-slate-900' : 'bg-gray-700/50 text-gray-400'}`}>{num}</div>))}</div>
+                           <p className="text-sm text-gray-400 mb-2">Números Sorteados ({narratedNumbers.length}/75):</p>
+                           <div className="flex flex-wrap gap-2 justify-center h-48 overflow-y-auto">{Array.from({length: 75}, (_, i) => i + 1).map(num => (<div key={num} className={`w-8 h-8 flex items-center justify-center rounded-full text-sm font-bold ${narratedNumbers.includes(num) ? 'bg-sky-400 text-slate-900' : 'bg-gray-700/50 text-gray-400'}`}>{num}</div>))}</div>
                         </div>
                      </div>
                 )}
@@ -586,7 +599,7 @@ const App: React.FC = () => {
                 {cardViewMode === 'carousel' ? (
                      <div className="relative max-w-md mx-auto">
                           <div className={`${bingoWinner?.cardId === myCards[currentCardIndex]?.id ? 'ring-4 ring-sky-400 animate-pulse' : ''} rounded-lg`}>
-                            {myCards[currentCardIndex] && <BingoCard cardData={myCards[currentCardIndex].cardData} drawnNumbers={new Set(drawnNumbers)} isAutoMarking={isAutoMarking} manualMarks={new Set(manualMarks[myCards[currentCardIndex].id] || ['LIVRE'])} onCellClick={(num) => handleCellClick(myCards[currentCardIndex].id, num)} />}
+                            {myCards[currentCardIndex] && <BingoCard cardData={myCards[currentCardIndex].cardData} drawnNumbers={new Set(narratedNumbers)} isAutoMarking={isAutoMarking} manualMarks={new Set(manualMarks[myCards[currentCardIndex].id] || ['LIVRE'])} onCellClick={(num) => handleCellClick(myCards[currentCardIndex].id, num)} />}
                           </div>
                           {myCards.length > 1 && (<>
                              <button onClick={() => setCurrentCardIndex(p => (p - 1 + myCards.length) % myCards.length)} className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-4 bg-gray-800/80 hover:bg-gray-700 text-white rounded-full w-12 h-12 flex items-center justify-center z-10">&#x276E;</button>
@@ -595,7 +608,7 @@ const App: React.FC = () => {
                           </>)}
                     </div>
                 ) : (
-                    <div className="space-y-6 max-w-md mx-auto">{myCards.map((card, index) => (<div key={card.id}><h3 className="text-center font-bold text-lg text-gray-300 mb-2">Cartela {index + 1}</h3><div className={`${bingoWinner?.cardId === card.id ? 'ring-4 ring-sky-400 animate-pulse' : ''} rounded-lg`}><BingoCard cardData={card.cardData} drawnNumbers={new Set(drawnNumbers)} isAutoMarking={isAutoMarking} manualMarks={new Set(manualMarks[card.id] || ['LIVRE'])} onCellClick={(num) => handleCellClick(card.id, num)} /></div></div>))}</div>
+                    <div className="space-y-6 max-w-md mx-auto">{myCards.map((card, index) => (<div key={card.id}><h3 className="text-center font-bold text-lg text-gray-300 mb-2">Cartela {index + 1}</h3><div className={`${bingoWinner?.cardId === card.id ? 'ring-4 ring-sky-400 animate-pulse' : ''} rounded-lg`}><BingoCard cardData={card.cardData} drawnNumbers={new Set(narratedNumbers)} isAutoMarking={isAutoMarking} manualMarks={new Set(manualMarks[card.id] || ['LIVRE'])} onCellClick={(num) => handleCellClick(card.id, num)} /></div></div>))}</div>
                 )}
               </div>
             )}
